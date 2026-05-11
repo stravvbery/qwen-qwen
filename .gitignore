@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Node
+node_modules/
+dist/
+.vite/
+.turbo/
+.next/
+out/
+
+# Local data / DB
+backend/data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+backend/static/
+frontend/tsconfig.tsbuildinfo
+*.tsbuildinfo

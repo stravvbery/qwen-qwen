@@ -1,0 +1,59 @@
+"""Pydantic request and response models."""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ModelInfo(BaseModel):
+    id: str
+    label: str
+    description: str
+    context_length: int | None = None
+    supports_reasoning: bool = False
+
+
+class MessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    chat_id: str
+    role: str
+    content: str
+    reasoning: str | None = None
+    model: str | None = None
+    created_at: datetime
+
+
+class ChatOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    title: str
+    model: str
+    system_prompt: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChatWithMessages(ChatOut):
+    messages: list[MessageOut] = Field(default_factory=list)
+
+
+class ChatCreate(BaseModel):
+    title: str | None = None
+    model: str
+    system_prompt: str | None = None
+
+
+class ChatUpdate(BaseModel):
+    title: str | None = None
+    model: str | None = None
+    system_prompt: str | None = None
+
+
+class MessageCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=200_000)
+    model: str | None = None  # override chat model for this send

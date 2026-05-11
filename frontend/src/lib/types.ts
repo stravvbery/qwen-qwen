@@ -1,0 +1,30 @@
+export interface ModelInfo {
+  id: string;
+  label: string;
+  description: string;
+  context_length: number | null;
+  supports_reasoning: boolean;
+}
+
+export interface Message {
+  id: string;
+  chat_id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  reasoning?: string | null;
+  model?: string | null;
+  created_at: string;
+}
+
+export interface Chat {
+  id: string;
+  title: string;
+  model: string;
+  system_prompt?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatDetail extends Chat {
+  messages: Message[];
+}
