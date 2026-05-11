@@ -22,7 +22,14 @@ export function ModelPicker({ models, value, onChange }: ModelPickerProps) {
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
 
-  if (!selected) return null;
+  if (!selected) {
+    return (
+      <div className="inline-flex items-center gap-2 rounded-full border border-border-muted bg-surface-2/80 px-3 py-1.5 text-xs font-semibold text-text-subtle">
+        <Sparkles className="h-3.5 w-3.5" />
+        Модель загружается
+      </div>
+    );
+  }
 
   return (
     <div className="relative" ref={ref}>
@@ -30,15 +37,16 @@ export function ModelPicker({ models, value, onChange }: ModelPickerProps) {
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={clsx(
-          "inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-sm",
-          "bg-surface-2 hover:bg-surface-3 border border-border text-text",
+          "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold",
+          "border-accent bg-accent-soft text-accent hover:border-accent-hover hover:text-accent-hover",
           "transition-colors duration-150",
         )}
       >
-        <Sparkles className="w-4 h-4 text-accent" />
+        <Sparkles className="h-3.5 w-3.5" />
+        <span className="text-text-subtle">Модель</span>
         <span className="font-medium">{selected.label}</span>
         <ChevronDown
-          className={clsx("w-4 h-4 transition-transform", open && "rotate-180")}
+          className={clsx("h-3.5 w-3.5 transition-transform", open && "rotate-180")}
         />
       </button>
       {open && (

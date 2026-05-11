@@ -1,6 +1,6 @@
 import clsx from "clsx";
-import { Dices, Rocket, Sparkles, Wand2, Zap } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Rocket, Sparkles, Wand2, Zap } from "lucide-react";
+import { useMemo } from "react";
 import type { DesignVariantId, ResponseModeId } from "../lib/types";
 import {
   DESIGN_VARIANTS,
@@ -12,14 +12,18 @@ interface EmptyStateProps {
   onPick?: (prompt: string) => void;
   design: DesignVariantId;
   mode: ResponseModeId;
+  promptSeed: number;
 }
 
 const CARD_COUNT = 4;
 
-export function EmptyState({ onPick, design, mode }: EmptyStateProps) {
-  const [offset, setOffset] = useState(0);
+export function EmptyState({ onPick, design, mode, promptSeed }: EmptyStateProps) {
   const activeDesign = DESIGN_VARIANTS.find((item) => item.id === design) ?? DESIGN_VARIANTS[0];
   const activeMode = RESPONSE_MODES.find((item) => item.id === mode) ?? RESPONSE_MODES[0];
+  const offset = useMemo(
+    () => Math.abs(promptSeed) % PROMPT_SUGGESTIONS.length,
+    [promptSeed],
+  );
   const visiblePrompts = useMemo(
     () =>
       Array.from({ length: CARD_COUNT }, (_, index) => {
@@ -28,17 +32,6 @@ export function EmptyState({ onPick, design, mode }: EmptyStateProps) {
       }),
     [offset],
   );
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setOffset((current) => (current + CARD_COUNT) % PROMPT_SUGGESTIONS.length);
-    }, 4200);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const shuffle = () => {
-    setOffset((current) => (current + 17) % PROMPT_SUGGESTIONS.length);
-  };
 
   if (design === "update2") {
     return (
@@ -83,18 +76,12 @@ export function EmptyState({ onPick, design, mode }: EmptyStateProps) {
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <div className="text-xs font-bold uppercase tracking-[0.22em] text-fuchsia-300">
-                  Prompt carousel
+                  Prompt deck
                 </div>
-                <div className="mt-1 text-sm text-white/55">4 карточки меняются сами</div>
+                <div className="mt-1 text-sm text-white/55">
+                  4 идеи для нового чата
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={shuffle}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-white/10 text-white hover:bg-white/20"
-                aria-label="Перемешать промпты"
-              >
-                <Dices className="h-4 w-4" />
-              </button>
             </div>
             <PromptGrid prompts={visiblePrompts} onPick={onPick} design={design} />
           </section>
@@ -120,13 +107,7 @@ export function EmptyState({ onPick, design, mode }: EmptyStateProps) {
               <div>DESIGN: {activeDesign.shortLabel}</div>
               <div>MODE: {activeMode.shortLabel}</div>
               <div>POOL: {PROMPT_SUGGESTIONS.length} PROMPTS</div>
-              <button
-                type="button"
-                onClick={shuffle}
-                className="mt-4 border border-border px-3 py-2 uppercase tracking-[0.18em] text-text hover:bg-surface-2"
-              >
-                shuffle
-              </button>
+              <div>REFRESH OR NEW CHAT: NEW IDEAS</div>
             </div>
           </section>
           <section className="p-3">
@@ -150,14 +131,6 @@ export function EmptyState({ onPick, design, mode }: EmptyStateProps) {
       <div className="mt-6 flex items-center gap-2 text-xs text-text-muted">
         <Zap className="h-3.5 w-3.5 text-accent" />
         {activeMode.label} · {PROMPT_SUGGESTIONS.length} быстрых идей
-        <button
-          type="button"
-          onClick={shuffle}
-          className="ml-2 inline-flex items-center gap-1 rounded-full border border-border-muted px-2 py-1 hover:border-border hover:text-text"
-        >
-          <Dices className="h-3 w-3" />
-          shuffle
-        </button>
       </div>
       <div className="mt-8 w-full max-w-2xl">
         <PromptGrid prompts={visiblePrompts} onPick={onPick} design={design} />
