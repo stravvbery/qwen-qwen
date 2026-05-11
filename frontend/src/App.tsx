@@ -10,12 +10,14 @@ import { ModelPicker } from "./components/ModelPicker";
 import { EmptyState } from "./components/EmptyState";
 import { DesignPicker } from "./components/DesignPicker";
 import { ResponseModePicker } from "./components/ResponseModePicker";
+import { ThemePicker } from "./components/ThemePicker";
 import {
   DESIGN_VARIANTS,
   QUICK_ACTIONS,
   RESPONSE_MODES,
   getModeByPrompt,
 } from "./lib/personalization";
+import { persistTheme, readStoredTheme, type ThemeId } from "./lib/themes";
 import type { DesignVariantId, ResponseModeId } from "./lib/types";
 
 export default function App() {
@@ -30,6 +32,12 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [selectedDesign, setSelectedDesign] = useState<DesignVariantId>("legacy");
   const [selectedMode, setSelectedMode] = useState<ResponseModeId>("normal");
+  const [theme, setTheme] = useState<ThemeId>(() => readStoredTheme());
+
+  const onThemeChange = useCallback((id: ThemeId) => {
+    setTheme(id);
+    persistTheme(id);
+  }, []);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -349,7 +357,11 @@ export default function App() {
 
   return (
     <div
-      className={`design-${selectedDesign} h-full w-full overflow-hidden bg-bg text-text`}
+      className={clsx(
+        `design-${selectedDesign}`,
+        isUpdate && `theme-${theme}`,
+        "h-full w-full overflow-hidden bg-bg text-text",
+      )}
     >
       {isUpdate && (
         <div className="pointer-events-none fixed inset-0 overflow-hidden aurora-bg" />
@@ -357,8 +369,7 @@ export default function App() {
       <div
         className={clsx(
           "relative flex h-full w-full",
-          isUpdate &&
-            "bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.6),transparent_30%),linear-gradient(135deg,#f4f4fb_0%,#ece9ff_55%,#dff1ff_100%)]",
+          isUpdate && "themed-app-bg",
           isZero && "font-mono",
         )}
       >
@@ -377,7 +388,7 @@ export default function App() {
           className={clsx(
             "relative z-30 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border-muted",
             isUpdate
-              ? "mb-4 min-h-[3.75rem] rounded-2xl border border-white/60 bg-white/75 px-5 py-2.5 shadow-[0_8px_30px_-18px_rgba(15,23,42,0.35)] backdrop-blur-xl"
+              ? "themed-surface mb-4 min-h-[3.75rem] rounded-2xl border px-5 py-2.5 shadow-[0_8px_30px_-18px_rgba(15,23,42,0.35)] backdrop-blur-xl"
               : isZero
                 ? "h-auto bg-bg px-3 py-2"
                 : "min-h-14 bg-surface-1/50 px-4 py-2 backdrop-blur",
@@ -406,6 +417,7 @@ export default function App() {
                 onChange={onModelChange}
               />
               <DesignPicker value={selectedDesign} onChange={setSelectedDesign} />
+              {isUpdate && <ThemePicker value={theme} onChange={onThemeChange} />}
               <ResponseModePicker
                 value={selectedMode}
                 onChange={onModeChange}

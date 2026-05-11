@@ -61,7 +61,7 @@ export function MessageBubble({ message, isStreaming, design }: MessageBubblePro
               className={clsx(
                 "flex items-center justify-center",
                 isUpdate
-                  ? "h-11 w-11 rounded-2xl bg-white/80 text-slate-900 shadow-sm"
+                  ? "themed-user-avatar h-11 w-11 rounded-2xl shadow-sm"
                   : "h-8 w-8 rounded-full",
               )}
             >
@@ -104,8 +104,8 @@ export function MessageBubble({ message, isStreaming, design }: MessageBubblePro
                 ? clsx(
                     "rounded-2xl border px-5 py-4 shadow-[0_10px_40px_-22px_rgba(15,23,42,0.35)] backdrop-blur-xl transition-shadow hover:shadow-[0_14px_44px_-22px_rgba(15,23,42,0.4)]",
                     isUser
-                      ? "border-indigo-200/70 bg-gradient-to-br from-indigo-50 via-white to-violet-50 text-text"
-                      : "border-white/70 bg-white/80 text-text",
+                      ? "themed-user-bubble text-text"
+                      : "border-white/70 bg-white/80 text-text [.theme-midnight_&]:border-white/10 [.theme-midnight_&]:bg-white/[0.04]",
                   )
                 : isZero
                   ? "border-l border-border-muted px-4 py-1 font-mono text-sm"

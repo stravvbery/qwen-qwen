@@ -53,7 +53,7 @@ export function ModelPicker({ models, value, onChange }: ModelPickerProps) {
       {open && (
         <div
           role="listbox"
-          className="absolute right-0 mt-2 w-72 z-30 rounded-xl border border-border bg-surface-1 shadow-floating animate-fadein overflow-hidden [.design-update2_&]:bg-white [.design-update2_&]:border-slate-200/80"
+          className="themed-surface-solid absolute right-0 mt-2 w-72 z-30 rounded-xl border border-border bg-surface-1 shadow-floating animate-fadein overflow-hidden"
         >
           {models.map((m) => {
             const isActive = m.id === value;
