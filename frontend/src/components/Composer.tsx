@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { useEffect, useRef } from "react";
-import { Image as ImageIcon, Paperclip, Send, StopCircle, X } from "lucide-react";
+import { Globe, Image as ImageIcon, Paperclip, Send, StopCircle, X } from "lucide-react";
 import type { DesignVariantId } from "../lib/types";
 import type { QuickAction } from "../lib/personalization";
 
@@ -17,6 +17,9 @@ interface ComposerProps {
   onAttachmentsChange: (next: string[]) => void;
   supportsVision: boolean;
   onAttachmentError?: (message: string) => void;
+  webSearch: boolean;
+  onWebSearchChange: (v: boolean) => void;
+  searchAvailable: boolean;
 }
 
 const ACCEPTED_TYPES = "image/png,image/jpeg,image/webp,image/gif";
@@ -52,6 +55,9 @@ export function Composer({
   onAttachmentsChange,
   supportsVision,
   onAttachmentError,
+  webSearch,
+  onWebSearchChange,
+  searchAvailable,
 }: ComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -202,6 +208,25 @@ export function Composer({
             e.target.value = "";
           }}
         />
+        {searchAvailable && (
+          <button
+            type="button"
+            onClick={() => onWebSearchChange(!webSearch)}
+            aria-label={webSearch ? "Отключить веб-поиск" : "Включить веб-поиск"}
+            title={webSearch ? "Веб-поиск включён (нажмите, чтобы выключить)" : "Искать в интернете"}
+            className={clsx(
+              "inline-flex h-10 w-10 shrink-0 items-center justify-center transition-colors",
+              isUpdate ? "rounded-2xl" : isZero ? "rounded-none" : "rounded-lg",
+              webSearch
+                ? isZero
+                  ? "border border-text bg-text text-bg"
+                  : "border border-accent bg-accent/15 text-accent"
+                : "border border-transparent text-text-muted hover:bg-surface-3 hover:text-text",
+            )}
+          >
+            <Globe className="h-4 w-4" />
+          </button>
+        )}
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}

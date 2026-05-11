@@ -65,3 +65,7 @@ class MessageCreate(BaseModel):
         max_length=8,
         description="Optional list of image data URLs (data:image/...;base64,...) for vision models.",
     )
+    web_search: bool = Field(
+        default=False,
+        description="When True, force the model to search the web before answering.",
+    )
