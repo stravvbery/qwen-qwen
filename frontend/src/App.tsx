@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import clsx from "clsx";
 import { api, streamMessage } from "./lib/api";
 import type { Chat, ChatDetail, Message, ModelInfo } from "./lib/types";
 import { Sidebar } from "./components/Sidebar";
@@ -7,6 +8,15 @@ import { ChatView } from "./components/ChatView";
 import { Composer } from "./components/Composer";
 import { ModelPicker } from "./components/ModelPicker";
 import { EmptyState } from "./components/EmptyState";
+import { DesignPicker } from "./components/DesignPicker";
+import { ResponseModePicker } from "./components/ResponseModePicker";
+import {
+  DESIGN_VARIANTS,
+  QUICK_ACTIONS,
+  RESPONSE_MODES,
+  getModeByPrompt,
+} from "./lib/personalization";
+import type { DesignVariantId, ResponseModeId } from "./lib/types";
 
 export default function App() {
   const navigate = useNavigate();
@@ -18,11 +28,17 @@ export default function App() {
   const [currentChat, setCurrentChat] = useState<ChatDetail | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
+  const [selectedDesign, setSelectedDesign] = useState<DesignVariantId>("legacy");
+  const [selectedMode, setSelectedMode] = useState<ResponseModeId>("normal");
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<string[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [promptSeed, setPromptSeed] = useState(() => Math.floor(Math.random() * 10000));
   const abortRef = useRef<AbortController | null>(null);
+
+  const currentChatId = currentChat?.id ?? null;
 
   // Initial load
   useEffect(() => {
@@ -51,6 +67,7 @@ export default function App() {
       setMessages([]);
       return;
     }
+    if (streaming && currentChatId === activeId) return;
     let cancelled = false;
     (async () => {
       try {
@@ -60,6 +77,7 @@ export default function App() {
         setCurrentChat(detail);
         setMessages(detail.messages);
         setSelectedModel(detail.model);
+        setSelectedMode(getModeByPrompt(detail.system_prompt).id);
       } catch (e) {
         if (cancelled) return;
         setError(e instanceof Error ? e.message : "Не удалось открыть чат");
@@ -68,9 +86,10 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeId]);
+  }, [activeId, currentChatId, streaming]);
 
   const onNewChat = useCallback(() => {
+    setPromptSeed((seed) => seed + 1);
     navigate("/");
   }, [navigate]);
 
@@ -112,50 +131,127 @@ export default function App() {
     [currentChat],
   );
 
+  const selectedModeConfig = useMemo(
+    () => RESPONSE_MODES.find((mode) => mode.id === selectedMode) ?? RESPONSE_MODES[0],
+    [selectedMode],
+  );
+
+  const selectedDesignConfig = useMemo(
+    () =>
+      DESIGN_VARIANTS.find((design) => design.id === selectedDesign) ?? DESIGN_VARIANTS[0],
+    [selectedDesign],
+  );
+
+  const onModeChange = useCallback(
+    async (id: ResponseModeId) => {
+      const mode = RESPONSE_MODES.find((item) => item.id === id) ?? RESPONSE_MODES[0];
+      setSelectedMode(mode.id);
+      if (currentChat) {
+        try {
+          const updated = await api.updateChat(currentChat.id, {
+            system_prompt: mode.systemPrompt,
+          });
+          setCurrentChat((prev) =>
+            prev ? { ...prev, system_prompt: updated.system_prompt } : prev,
+          );
+          setChats((prev) =>
+            prev.map((chat) =>
+              chat.id === updated.id
+                ? { ...chat, system_prompt: updated.system_prompt }
+                : chat,
+            ),
+          );
+        } catch {
+          /* ignore — selected mode still applies to the next send */
+        }
+      }
+    },
+    [currentChat],
+  );
+
   const onSubmit = useCallback(async () => {
     const text = input.trim();
-    if (!text || streaming) return;
+    if (streaming) return;
+    if (!text && attachments.length === 0) return;
 
     setError(null);
     setStreaming(true);
 
     let chatId = activeId;
     let createdNew = false;
+    const localUserId = `local-user-${Date.now()}`;
+    const localAssistantId = `local-assistant-${Date.now()}`;
+    const now = new Date().toISOString();
+    const outgoingAttachments = attachments;
+    const optimisticMessages: Message[] = [
+      {
+        id: localUserId,
+        chat_id: chatId ?? "pending",
+        role: "user",
+        content: text,
+        model: selectedModel,
+        attachments: outgoingAttachments.length ? outgoingAttachments : null,
+        created_at: now,
+      },
+      {
+        id: localAssistantId,
+        chat_id: chatId ?? "pending",
+        role: "assistant",
+        content: "",
+        reasoning: "",
+        model: selectedModel,
+        created_at: now,
+      },
+    ];
 
     try {
       if (!chatId) {
-        const chat = await api.createChat({ model: selectedModel });
+        const chat = await api.createChat({
+          model: selectedModel,
+          system_prompt: selectedModeConfig.systemPrompt,
+        });
         chatId = chat.id;
         createdNew = true;
         setChats((prev) => [chat, ...prev]);
         setCurrentChat({ ...chat, messages: [] });
-        setMessages([]);
         navigate(`/c/${chat.id}`, { replace: true });
       }
 
       setInput("");
+      setAttachments([]);
+      setMessages((prev) => [
+        ...prev,
+        ...optimisticMessages.map((message) => ({ ...message, chat_id: chatId! })),
+      ]);
+      setStreamingId(localAssistantId);
 
       const controller = new AbortController();
       abortRef.current = controller;
 
       await streamMessage(
         chatId!,
-        { content: text, model: selectedModel },
+        {
+          content: text || "",
+          model: selectedModel,
+          system_prompt: selectedModeConfig.systemPrompt,
+          attachments: outgoingAttachments.length ? outgoingAttachments : null,
+        },
         {
           onMeta: ({ user_message, assistant_message_id, model }) => {
-            setMessages((prev) => [
-              ...prev,
-              user_message,
-              {
-                id: assistant_message_id,
-                chat_id: chatId!,
-                role: "assistant",
-                content: "",
-                reasoning: "",
-                model,
-                created_at: new Date().toISOString(),
-              },
-            ]);
+            setMessages((prev) =>
+              prev.map((message) => {
+                if (message.id === localUserId) return user_message;
+                if (message.id === localAssistantId) {
+                  return {
+                    ...message,
+                    id: assistant_message_id,
+                    chat_id: chatId!,
+                    model,
+                  };
+                }
+                return message;
+              }),
+            );
             setStreamingId(assistant_message_id);
           },
           onDelta: ({ content, reasoning }) => {
@@ -220,7 +316,16 @@ export default function App() {
       setStreamingId(null);
       abortRef.current = null;
     }
-  }, [activeId, input, messages.length, navigate, selectedModel, streaming]);
+  }, [
+    activeId,
+    attachments,
+    input,
+    messages.length,
+    navigate,
+    selectedModeConfig.systemPrompt,
+    selectedModel,
+    streaming,
+  ]);
 
   const onStop = useCallback(() => {
     abortRef.current?.abort();
@@ -231,55 +336,117 @@ export default function App() {
 
   const modelById = useMemo(() => new Map(models.map((m) => [m.id, m])), [models]);
   const headerModelId = currentChat?.model ?? selectedModel;
+  const activeModelInfo = modelById.get(selectedModel) ?? null;
+  const supportsVision = !!activeModelInfo?.supports_vision;
+  const isUpdate = selectedDesign === "update2";
+  const isZero = selectedDesign === "zeroSugar";
+
+  // If the user picks a non-vision model after attaching images, drop them so
+  // we don't accidentally send a payload the model can't read.
+  useEffect(() => {
+    if (!supportsVision && attachments.length) setAttachments([]);
+  }, [supportsVision, attachments.length]);
 
   return (
-    <div className="h-full w-full flex bg-bg text-text">
-      <Sidebar
-        chats={chats}
-        activeId={activeId}
-        onSelect={onSelectChat}
-        onNew={onNewChat}
-        onDelete={onDeleteChat}
-      />
-      <main className="flex-1 min-w-0 flex flex-col h-full">
-        <header className="h-14 px-4 flex items-center justify-between border-b border-border-muted bg-surface-1/50 backdrop-blur">
-          <div className="min-w-0 flex items-center gap-3">
-            <div className="truncate text-sm font-medium text-text">
-              {headerTitle}
-            </div>
-            {currentChat && modelById.get(headerModelId) && (
-              <span className="text-[11px] uppercase tracking-wide text-text-subtle">
-                {modelById.get(headerModelId)!.label}
-              </span>
-            )}
-          </div>
-          <ModelPicker
-            models={models}
-            value={selectedModel}
-            onChange={onModelChange}
-          />
-        </header>
-
-        {isEmpty ? (
-          <EmptyState onPick={(p) => setInput(p)} />
-        ) : (
-          <ChatView
-            messages={messages}
-            streamingId={streamingId}
-            error={error}
-          />
-        )}
-
-        <div className="border-t border-border-muted bg-surface-1/40 backdrop-blur">
-          <Composer
-            value={input}
-            onChange={setInput}
-            onSubmit={onSubmit}
-            onStop={onStop}
-            busy={streaming}
-          />
+    <div
+      className={`design-${selectedDesign} h-full w-full overflow-hidden bg-bg text-text`}
+    >
+      {isUpdate && (
+        <div className="pointer-events-none fixed inset-0 overflow-hidden">
+          <div className="absolute -left-32 top-12 h-96 w-96 rounded-full bg-fuchsia-400/25 blur-3xl" />
+          <div className="absolute bottom-0 right-0 h-[32rem] w-[32rem] rounded-full bg-cyan-300/25 blur-3xl" />
         </div>
-      </main>
+      )}
+      <div
+        className={clsx(
+          "relative flex h-full w-full",
+          isUpdate &&
+            "bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.75),transparent_32%),linear-gradient(135deg,#f8fafc_0%,#ede9fe_45%,#cffafe_100%)]",
+          isZero && "font-mono",
+        )}
+      >
+        <Sidebar
+          chats={chats}
+          activeId={activeId}
+          onSelect={onSelectChat}
+          onNew={onNewChat}
+          onDelete={onDeleteChat}
+          design={selectedDesign}
+        />
+        <main
+          className={clsx("flex h-full min-h-0 min-w-0 flex-1 flex-col", isUpdate && "p-4")}
+        >
+          <header
+          className={clsx(
+            "flex items-center justify-between border-b border-border-muted",
+            isUpdate
+              ? "mb-4 min-h-20 rounded-[2rem] border border-white/30 bg-white/60 px-5 py-3 shadow-[0_18px_70px_-45px_rgba(15,23,42,1)] backdrop-blur-2xl"
+              : isZero
+                ? "h-auto bg-bg px-3 py-2"
+                : "h-14 bg-surface-1/50 px-4 backdrop-blur",
+          )}
+          >
+            <div className="min-w-0 flex items-center gap-3">
+              <div className="truncate text-sm font-medium text-text">
+                {headerTitle}
+              </div>
+              {currentChat && modelById.get(headerModelId) && (
+                <span className="text-[11px] uppercase tracking-wide text-text-subtle">
+                  {modelById.get(headerModelId)!.label}
+                </span>
+              )}
+              <span className="hidden text-[11px] uppercase tracking-wide text-text-subtle sm:inline">
+                {selectedDesignConfig.shortLabel} · {selectedModeConfig.shortLabel}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <ModelPicker
+                models={models}
+                value={selectedModel}
+                onChange={onModelChange}
+              />
+              <DesignPicker value={selectedDesign} onChange={setSelectedDesign} />
+              <ResponseModePicker
+                value={selectedMode}
+                onChange={onModeChange}
+                compact={isUpdate || isZero}
+              />
+            </div>
+          </header>
+
+          {isEmpty ? (
+            <EmptyState
+              onPick={(p) => setInput(p)}
+              design={selectedDesign}
+              mode={selectedMode}
+              promptSeed={promptSeed}
+            />
+          ) : (
+            <ChatView
+              messages={messages}
+              streamingId={streamingId}
+              error={error}
+              design={selectedDesign}
+            />
+          )}
+
+          <div className="relative z-10 shrink-0 border-t border-border-muted bg-surface-1/40 backdrop-blur">
+            <Composer
+              value={input}
+              onChange={setInput}
+              onSubmit={onSubmit}
+              onStop={onStop}
+              design={selectedDesign}
+              quickActions={QUICK_ACTIONS}
+              busy={streaming}
+              attachments={attachments}
+              onAttachmentsChange={setAttachments}
+              supportsVision={supportsVision}
+              onAttachmentError={setError}
+            />
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

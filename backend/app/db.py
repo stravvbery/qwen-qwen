@@ -26,10 +26,22 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSe
 async def init_db() -> None:
     """Create database tables. Safe to run on every startup."""
 
+    from sqlalchemy import text
+
     from . import models  # noqa: F401 — ensure models are imported before create_all
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Lightweight in-place migration: add columns introduced after the
+        # initial schema. ``create_all`` only creates missing tables, it never
+        # alters existing ones, so on pre-existing databases we need to ALTER
+        # to pick up new columns.
+        result = await conn.execute(text("PRAGMA table_info(messages)"))
+        columns = {row[1] for row in result.fetchall()}
+        if "attachments" not in columns:
+            await conn.execute(
+                text("ALTER TABLE messages ADD COLUMN attachments TEXT")
+            )
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

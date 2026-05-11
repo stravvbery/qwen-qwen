@@ -55,7 +55,12 @@ export interface StreamCallbacks {
 
 export async function streamMessage(
   chatId: string,
-  payload: { content: string; model?: string },
+  payload: {
+    content: string;
+    model?: string;
+    system_prompt?: string | null;
+    attachments?: string[] | null;
+  },
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
 ): Promise<void> {

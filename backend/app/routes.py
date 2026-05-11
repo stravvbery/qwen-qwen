@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api", tags=["chat"])
 
 # --- model catalog -----------------------------------------------------------
 
-# Curated list — only the four models the user picked. Kept server-side so the
+# Curated list — only the models the user picked. Kept server-side so the
 # browser cannot point the proxy at arbitrary models with the same API key.
 MODELS: list[schemas.ModelInfo] = [
     schemas.ModelInfo(
@@ -34,16 +34,18 @@ MODELS: list[schemas.ModelInfo] = [
     schemas.ModelInfo(
         id="accounts/fireworks/models/kimi-k2p6",
         label="Kimi K2.6",
-        description="Универсальная модель, поддерживает картинки и инструменты.",
+        description="Универсальная мультимодальная модель: текст + изображения, инструменты.",
         context_length=262_144,
         supports_reasoning=True,
+        supports_vision=True,
     ),
     schemas.ModelInfo(
         id="accounts/fireworks/models/qwen3p6-plus",
         label="Qwen3.6 Plus",
-        description="Qwen 3.6 Plus — быстрая модель общего назначения.",
+        description="Qwen 3.6 Plus — быстрая мультимодальная модель общего назначения.",
         context_length=None,
         supports_reasoning=True,
+        supports_vision=True,
     ),
     schemas.ModelInfo(
         id="accounts/fireworks/models/minimax-m2p7",
@@ -52,9 +54,17 @@ MODELS: list[schemas.ModelInfo] = [
         context_length=196_608,
         supports_reasoning=False,
     ),
+    schemas.ModelInfo(
+        id="accounts/fireworks/models/glm-5p1",
+        label="GLM 5.1",
+        description="GLM 5.1 — новый generalist от Zhipu.",
+        context_length=None,
+        supports_reasoning=True,
+    ),
 ]
 
 _MODEL_IDS = {m.id for m in MODELS}
+_MODELS_BY_ID = {m.id: m for m in MODELS}
 
 
 def _ensure_model(model_id: str) -> None:
@@ -63,6 +73,45 @@ def _ensure_model(model_id: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown model: {model_id}",
         )
+
+
+# Max raw size of a single attachment in bytes (~6 MB before base64 padding).
+_MAX_ATTACHMENT_BYTES = 6 * 1024 * 1024
+
+
+def _validate_attachments(
+    model_id: str, attachments: list[str] | None
+) -> list[str] | None:
+    """Validate image attachments against the chosen model and basic safety limits.
+
+    Returns the normalised list (stripped, non-empty) or ``None``.
+    """
+
+    if not attachments:
+        return None
+    cleaned = [a.strip() for a in attachments if a and a.strip()]
+    if not cleaned:
+        return None
+
+    model = _MODELS_BY_ID.get(model_id)
+    if model is None or not model.supports_vision:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Model {model_id} does not support image attachments.",
+        )
+
+    for url in cleaned:
+        if not (url.startswith("data:image/") or url.startswith("https://")):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Attachment must be an https URL or data:image/...;base64 URL.",
+            )
+        if len(url) > _MAX_ATTACHMENT_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Attachment is too large.",
+            )
+    return cleaned
 
 
 # --- routes ------------------------------------------------------------------
@@ -145,8 +194,25 @@ async def delete_chat(chat_id: str, db: AsyncSession = Depends(get_session)) -> 
     await db.commit()
 
 
-def _build_messages(chat: Chat, history: list[Message]) -> list[dict[str, str]]:
-    out: list[dict[str, str]] = []
+def _message_content(m: Message) -> str | list[dict[str, object]]:
+    """Build the Fireworks ``content`` field for a single stored message.
+
+    User messages with image attachments get an OpenAI-style multimodal
+    content list. All other messages keep the plain-string form.
+    """
+
+    if m.role == "user" and m.attachments:
+        parts: list[dict[str, object]] = []
+        if m.content:
+            parts.append({"type": "text", "text": m.content})
+        for url in m.attachments:
+            parts.append({"type": "image_url", "image_url": {"url": url}})
+        return parts
+    return m.content
+
+
+def _build_messages(chat: Chat, history: list[Message]) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
     if chat.system_prompt:
         out.append({"role": "system", "content": chat.system_prompt})
     for m in history:
@@ -154,7 +220,7 @@ def _build_messages(chat: Chat, history: list[Message]) -> list[dict[str, str]]:
             continue
         if m.role == "assistant" and not m.content:
             continue
-        out.append({"role": m.role, "content": m.content})
+        out.append({"role": m.role, "content": _message_content(m)})
     return out
 
 
@@ -182,10 +248,26 @@ async def post_message(
     model_id = payload.model or chat.model
     _ensure_model(model_id)
 
+    attachments = _validate_attachments(model_id, payload.attachments)
+
+    if not payload.content.strip() and not attachments:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Message must include text or at least one attachment.",
+        )
+
     if chat.model != model_id:
         chat.model = model_id
+    if payload.system_prompt is not None:
+        chat.system_prompt = payload.system_prompt or None
 
-    user_msg = Message(chat_id=chat.id, role="user", content=payload.content, model=model_id)
+    user_msg = Message(
+        chat_id=chat.id,
+        role="user",
+        content=payload.content,
+        model=model_id,
+        attachments=attachments,
+    )
     db.add(user_msg)
     await db.flush()
 
@@ -207,7 +289,16 @@ async def post_message(
     should_title = chat.title in {"", "Новый чат"} and not any(
         m.role == "assistant" and m.content for m in history
     )
-    first_user_excerpt = payload.content.strip().splitlines()[0][:60] if should_title else None
+    if should_title:
+        text_stripped = payload.content.strip()
+        if text_stripped:
+            first_user_excerpt = text_stripped.splitlines()[0][:60]
+        elif attachments:
+            first_user_excerpt = f"Изображение ({len(attachments)})"
+        else:
+            first_user_excerpt = None
+    else:
+        first_user_excerpt = None
 
     await db.commit()
 
@@ -228,6 +319,7 @@ async def post_message(
                     "chat_id": chat_id_val,
                     "role": "user",
                     "content": payload.content,
+                    "attachments": attachments,
                     "created_at": user_created.isoformat(),
                     "model": model_id,
                 },
