@@ -24,21 +24,63 @@
 }
 
 .design-update2 {
-  --bg: #f8fafc;
-  --surface-1: rgba(255, 255, 255, 0.72);
-  --surface-2: rgba(255, 255, 255, 0.66);
-  --surface-3: rgba(255, 255, 255, 0.88);
-  --border: rgba(148, 163, 184, 0.45);
-  --border-muted: rgba(148, 163, 184, 0.25);
-  --text: #0f172a;
-  --text-muted: #475569;
-  --text-subtle: #94a3b8;
-  --accent: #d946ef;
-  --accent-hover: #c026d3;
-  --accent-soft: rgba(217, 70, 239, 0.14);
-  --success: #059669;
+  --bg: #f4f4fb;
+  --surface-1: rgba(255, 255, 255, 0.78);
+  --surface-2: rgba(255, 255, 255, 0.72);
+  --surface-3: rgba(255, 255, 255, 0.92);
+  --border: rgba(99, 102, 241, 0.22);
+  --border-muted: rgba(148, 163, 184, 0.22);
+  --text: #0b1020;
+  --text-muted: #4b5675;
+  --text-subtle: #8b93ad;
+  --accent: #6d4dff;
+  --accent-hover: #5b3aff;
+  --accent-soft: rgba(109, 77, 255, 0.12);
+  --success: #0f9d6b;
   --warning: #d97706;
   --danger: #e11d48;
+}
+
+/* Refined modern 2.0 surface: subtle aurora background, crisp glass panels. */
+.design-update2 {
+  background-color: var(--bg);
+}
+
+.design-update2 .glass-card {
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset,
+    0 10px 40px -22px rgba(15, 23, 42, 0.35);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+}
+
+.design-update2 .aurora-bg::before,
+.design-update2 .aurora-bg::after {
+  content: "";
+  position: absolute;
+  inset: auto;
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(80px);
+  opacity: 0.55;
+  border-radius: 9999px;
+}
+
+.design-update2 .aurora-bg::before {
+  width: 36rem;
+  height: 36rem;
+  top: -8rem;
+  left: -6rem;
+  background: radial-gradient(circle at center, #c4b5fd 0%, rgba(196, 181, 253, 0) 70%);
+}
+
+.design-update2 .aurora-bg::after {
+  width: 32rem;
+  height: 32rem;
+  bottom: -10rem;
+  right: -6rem;
+  background: radial-gradient(circle at center, #67e8f9 0%, rgba(103, 232, 249, 0) 70%);
 }
 
 .design-zeroSugar {
@@ -77,6 +119,11 @@ body {
 .design-update2 .prose-chat pre {
   background: rgba(15, 23, 42, 0.94);
   border-color: rgba(255, 255, 255, 0.12);
+}
+
+.design-update2 .prose-chat code {
+  background: rgba(99, 102, 241, 0.08);
+  color: #1e1b4b;
 }
 
 .design-zeroSugar .prose-chat {

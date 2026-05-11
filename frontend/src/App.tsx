@@ -352,16 +352,13 @@ export default function App() {
       className={`design-${selectedDesign} h-full w-full overflow-hidden bg-bg text-text`}
     >
       {isUpdate && (
-        <div className="pointer-events-none fixed inset-0 overflow-hidden">
-          <div className="absolute -left-32 top-12 h-96 w-96 rounded-full bg-fuchsia-400/25 blur-3xl" />
-          <div className="absolute bottom-0 right-0 h-[32rem] w-[32rem] rounded-full bg-cyan-300/25 blur-3xl" />
-        </div>
+        <div className="pointer-events-none fixed inset-0 overflow-hidden aurora-bg" />
       )}
       <div
         className={clsx(
           "relative flex h-full w-full",
           isUpdate &&
-            "bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.75),transparent_32%),linear-gradient(135deg,#f8fafc_0%,#ede9fe_45%,#cffafe_100%)]",
+            "bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.6),transparent_30%),linear-gradient(135deg,#f4f4fb_0%,#ece9ff_55%,#dff1ff_100%)]",
           isZero && "font-mono",
         )}
       >
@@ -378,26 +375,29 @@ export default function App() {
         >
           <header
           className={clsx(
-            "flex items-center justify-between border-b border-border-muted",
+            "relative z-30 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border-muted",
             isUpdate
-              ? "mb-4 min-h-20 rounded-[2rem] border border-white/30 bg-white/60 px-5 py-3 shadow-[0_18px_70px_-45px_rgba(15,23,42,1)] backdrop-blur-2xl"
+              ? "mb-4 min-h-[3.75rem] rounded-2xl border border-white/60 bg-white/75 px-5 py-2.5 shadow-[0_8px_30px_-18px_rgba(15,23,42,0.35)] backdrop-blur-xl"
               : isZero
                 ? "h-auto bg-bg px-3 py-2"
-                : "h-14 bg-surface-1/50 px-4 backdrop-blur",
+                : "min-h-14 bg-surface-1/50 px-4 py-2 backdrop-blur",
           )}
           >
-            <div className="min-w-0 flex items-center gap-3">
+            <div className="flex min-w-0 max-w-full flex-1 flex-col gap-0.5 sm:max-w-[40%]">
               <div className="truncate text-sm font-medium text-text">
                 {headerTitle}
               </div>
-              {currentChat && modelById.get(headerModelId) && (
-                <span className="text-[11px] uppercase tracking-wide text-text-subtle">
-                  {modelById.get(headerModelId)!.label}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] uppercase tracking-wide text-text-subtle">
+                {currentChat && modelById.get(headerModelId) && (
+                  <span className="truncate">
+                    {modelById.get(headerModelId)!.label}
+                  </span>
+                )}
+                <span className="text-text-subtle/60">·</span>
+                <span>
+                  {selectedDesignConfig.shortLabel} · {selectedModeConfig.shortLabel}
                 </span>
-              )}
-              <span className="hidden text-[11px] uppercase tracking-wide text-text-subtle sm:inline">
-                {selectedDesignConfig.shortLabel} · {selectedModeConfig.shortLabel}
-              </span>
+              </div>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
               <ModelPicker
