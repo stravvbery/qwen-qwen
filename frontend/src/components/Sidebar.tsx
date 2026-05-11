@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { MessageSquarePlus, Trash2, MessageCircle } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { Chat } from "../lib/types";
+import type { Chat, DesignVariantId } from "../lib/types";
 import { formatRelative } from "../lib/format";
 
 interface SidebarProps {
@@ -10,10 +10,20 @@ interface SidebarProps {
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
+  design: DesignVariantId;
 }
 
-export function Sidebar({ chats, activeId, onSelect, onNew, onDelete }: SidebarProps) {
+export function Sidebar({
+  chats,
+  activeId,
+  onSelect,
+  onNew,
+  onDelete,
+  design,
+}: SidebarProps) {
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const isUpdate = design === "update2";
+  const isZero = design === "zeroSugar";
 
   useEffect(() => {
     if (!confirmId) return;
@@ -22,15 +32,32 @@ export function Sidebar({ chats, activeId, onSelect, onNew, onDelete }: SidebarP
   }, [confirmId]);
 
   return (
-    <aside className="flex flex-col w-72 shrink-0 h-full bg-surface-1 border-r border-border-muted">
-      <div className="p-3 border-b border-border-muted">
+    <aside
+      className={clsx(
+        "flex shrink-0 flex-col",
+        isUpdate
+          ? "m-4 mr-0 h-[calc(100%-2rem)] w-80 rounded-[2rem] border border-white/20 bg-white/60 shadow-[0_24px_80px_-40px_rgba(15,23,42,0.8)] backdrop-blur-2xl"
+          : isZero
+            ? "h-full w-64 border-r border-border-muted bg-bg font-mono"
+            : "h-full w-72 border-r border-border-muted bg-surface-1",
+      )}
+    >
+      <div
+        className={clsx(
+          "border-b border-border-muted",
+          isUpdate ? "p-4" : isZero ? "p-2" : "p-3",
+        )}
+      >
         <button
           type="button"
           onClick={onNew}
           className={clsx(
-            "w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-md",
-            "bg-accent text-white font-medium text-sm shadow-raised",
-            "hover:bg-accent-hover transition-colors duration-150",
+            "inline-flex w-full items-center justify-center gap-2 font-medium transition-colors duration-150",
+            isUpdate
+              ? "rounded-2xl bg-slate-950 px-4 py-3 text-sm text-white shadow-[0_16px_40px_-20px_rgba(15,23,42,0.9)] hover:bg-fuchsia-600"
+              : isZero
+                ? "rounded-none border border-border px-2 py-2 text-xs uppercase tracking-[0.2em] text-text hover:bg-surface-2"
+                : "rounded-md bg-accent px-3 py-2 text-sm text-white shadow-raised hover:bg-accent-hover",
           )}
         >
           <MessageSquarePlus className="w-4 h-4" />
@@ -38,7 +65,7 @@ export function Sidebar({ chats, activeId, onSelect, onNew, onDelete }: SidebarP
         </button>
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-2 py-2">
+      <nav className={clsx("flex-1 overflow-y-auto", isUpdate ? "px-3 py-3" : "px-2 py-2")}>
         {chats.length === 0 ? (
           <div className="px-3 py-8 text-center text-sm text-text-muted">
             <MessageCircle className="w-6 h-6 mx-auto mb-2 text-text-subtle" />
@@ -53,17 +80,37 @@ export function Sidebar({ chats, activeId, onSelect, onNew, onDelete }: SidebarP
                 <li key={chat.id}>
                   <div
                     className={clsx(
-                      "group flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer",
-                      "transition-colors duration-150",
-                      isActive ? "bg-surface-3" : "hover:bg-surface-3",
+                      "group flex cursor-pointer items-center gap-2 transition-colors duration-150",
+                      isUpdate
+                        ? "rounded-2xl px-3 py-3"
+                        : isZero
+                          ? "rounded-none border-b border-border-muted px-2 py-2"
+                          : "rounded-md px-3 py-2",
+                      isActive
+                        ? isUpdate
+                          ? "bg-slate-950 text-white shadow-[0_16px_40px_-24px_rgba(15,23,42,1)]"
+                          : "bg-surface-3"
+                        : isUpdate
+                          ? "hover:bg-white/70"
+                          : "hover:bg-surface-3",
                     )}
                     onClick={() => onSelect(chat.id)}
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm text-text font-medium">
+                      <div
+                        className={clsx(
+                          "truncate text-sm font-medium",
+                          isActive && isUpdate ? "text-white" : "text-text",
+                        )}
+                      >
                         {chat.title || "Без названия"}
                       </div>
-                      <div className="text-xs text-text-subtle mt-0.5">
+                      <div
+                        className={clsx(
+                          "mt-0.5 text-xs",
+                          isActive && isUpdate ? "text-white/60" : "text-text-subtle",
+                        )}
+                      >
                         {formatRelative(chat.updated_at)}
                       </div>
                     </div>
@@ -97,8 +144,13 @@ export function Sidebar({ chats, activeId, onSelect, onNew, onDelete }: SidebarP
         )}
       </nav>
 
-      <div className="px-4 py-3 border-t border-border-muted text-[11px] text-text-subtle">
-        Powered by Fireworks AI
+      <div
+        className={clsx(
+          "border-t border-border-muted text-[11px] text-text-subtle",
+          isUpdate ? "px-5 py-4" : "px-4 py-3",
+        )}
+      >
+        {isZero ? "FW/AI :: ONLINE" : "Powered by Fireworks AI"}
       </div>
     </aside>
   );

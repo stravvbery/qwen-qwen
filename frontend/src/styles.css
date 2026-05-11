@@ -23,6 +23,42 @@
   --danger: #ff6b6b;
 }
 
+.design-update2 {
+  --bg: #f8fafc;
+  --surface-1: rgba(255, 255, 255, 0.72);
+  --surface-2: rgba(255, 255, 255, 0.66);
+  --surface-3: rgba(255, 255, 255, 0.88);
+  --border: rgba(148, 163, 184, 0.45);
+  --border-muted: rgba(148, 163, 184, 0.25);
+  --text: #0f172a;
+  --text-muted: #475569;
+  --text-subtle: #94a3b8;
+  --accent: #d946ef;
+  --accent-hover: #c026d3;
+  --accent-soft: rgba(217, 70, 239, 0.14);
+  --success: #059669;
+  --warning: #d97706;
+  --danger: #e11d48;
+}
+
+.design-zeroSugar {
+  --bg: #050505;
+  --surface-1: #050505;
+  --surface-2: #0b0b0b;
+  --surface-3: #121212;
+  --border: #f2f2f2;
+  --border-muted: #2a2a2a;
+  --text: #f2f2f2;
+  --text-muted: #b5b5b5;
+  --text-subtle: #686868;
+  --accent: #f2f2f2;
+  --accent-hover: #cfcfcf;
+  --accent-soft: rgba(255, 255, 255, 0.08);
+  --success: #f2f2f2;
+  --warning: #f2f2f2;
+  --danger: #f2f2f2;
+}
+
 html,
 body,
 #root {
@@ -36,6 +72,20 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+}
+
+.design-update2 .prose-chat pre {
+  background: rgba(15, 23, 42, 0.94);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.design-zeroSugar .prose-chat {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.9rem;
+}
+
+.design-zeroSugar .prose-chat pre {
+  border-radius: 0;
 }
 
 * {

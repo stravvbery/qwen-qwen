@@ -57,3 +57,4 @@ class ChatUpdate(BaseModel):
 class MessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=200_000)
     model: str | None = None  # override chat model for this send
+    system_prompt: str | None = None
