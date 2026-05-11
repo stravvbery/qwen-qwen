@@ -34,6 +34,7 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [promptSeed, setPromptSeed] = useState(() => Math.floor(Math.random() * 10000));
   const abortRef = useRef<AbortController | null>(null);
 
   const currentChatId = currentChat?.id ?? null;
@@ -87,6 +88,7 @@ export default function App() {
   }, [activeId, currentChatId, streaming]);
 
   const onNewChat = useCallback(() => {
+    setPromptSeed((seed) => seed + 1);
     navigate("/");
   }, [navigate]);
 
@@ -357,7 +359,7 @@ export default function App() {
           design={selectedDesign}
         />
         <main
-          className={clsx("flex h-full min-w-0 flex-1 flex-col", isUpdate && "p-4")}
+          className={clsx("flex h-full min-h-0 min-w-0 flex-1 flex-col", isUpdate && "p-4")}
         >
           <header
           className={clsx(
@@ -383,16 +385,16 @@ export default function App() {
               </span>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
+              <ModelPicker
+                models={models}
+                value={selectedModel}
+                onChange={onModelChange}
+              />
               <DesignPicker value={selectedDesign} onChange={setSelectedDesign} />
               <ResponseModePicker
                 value={selectedMode}
                 onChange={onModeChange}
                 compact={isUpdate || isZero}
-              />
-              <ModelPicker
-                models={models}
-                value={selectedModel}
-                onChange={onModelChange}
               />
             </div>
           </header>
@@ -402,6 +404,7 @@ export default function App() {
               onPick={(p) => setInput(p)}
               design={selectedDesign}
               mode={selectedMode}
+              promptSeed={promptSeed}
             />
           ) : (
             <ChatView
@@ -412,7 +415,7 @@ export default function App() {
             />
           )}
 
-          <div className="border-t border-border-muted bg-surface-1/40 backdrop-blur">
+          <div className="relative z-10 shrink-0 border-t border-border-muted bg-surface-1/40 backdrop-blur">
             <Composer
               value={input}
               onChange={setInput}

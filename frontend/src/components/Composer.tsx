@@ -93,8 +93,9 @@ export function Composer({
           placeholder={placeholder}
           rows={1}
           className={clsx(
-            "flex-1 resize-none bg-transparent px-2 py-2 outline-none",
+            "min-h-10 flex-1 resize-none bg-transparent px-2 py-2 outline-none",
             "text-[15px] leading-relaxed placeholder:text-text-subtle",
+            "text-text caret-accent",
             isZero && "font-mono text-sm",
           )}
         />
