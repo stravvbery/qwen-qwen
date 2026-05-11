@@ -102,7 +102,38 @@ export function MessageBubble({ message, isStreaming, design }: MessageBubblePro
             )}
           >
             {isUser ? (
-              <div className="whitespace-pre-wrap break-words">{message.content}</div>
+              <>
+                {message.attachments && message.attachments.length > 0 && (
+                  <div
+                    className={clsx(
+                      "mb-2 flex flex-wrap gap-2",
+                      message.content ? "mb-2" : "mb-0",
+                    )}
+                  >
+                    {message.attachments.map((url, index) => (
+                      <a
+                        key={`${index}-${url.slice(0, 32)}`}
+                        href={url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className={clsx(
+                          "block max-h-48 overflow-hidden rounded-lg border border-border-muted",
+                          isZero && "rounded-none",
+                        )}
+                      >
+                        <img
+                          src={url}
+                          alt={`Изображение ${index + 1}`}
+                          className="max-h-48 max-w-xs object-contain"
+                        />
+                      </a>
+                    ))}
+                  </div>
+                )}
+                {message.content && (
+                  <div className="whitespace-pre-wrap break-words">{message.content}</div>
+                )}
+              </>
             ) : message.content ? (
               <Markdown>{message.content}</Markdown>
             ) : isStreaming ? (

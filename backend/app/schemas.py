@@ -13,6 +13,7 @@ class ModelInfo(BaseModel):
     description: str
     context_length: int | None = None
     supports_reasoning: bool = False
+    supports_vision: bool = False
 
 
 class MessageOut(BaseModel):
@@ -24,6 +25,7 @@ class MessageOut(BaseModel):
     content: str
     reasoning: str | None = None
     model: str | None = None
+    attachments: list[str] | None = None
     created_at: datetime
 
 
@@ -55,6 +57,11 @@ class ChatUpdate(BaseModel):
 
 
 class MessageCreate(BaseModel):
-    content: str = Field(min_length=1, max_length=200_000)
+    content: str = Field(default="", max_length=200_000)
     model: str | None = None  # override chat model for this send
     system_prompt: str | None = None
+    attachments: list[str] | None = Field(
+        default=None,
+        max_length=8,
+        description="Optional list of image data URLs (data:image/...;base64,...) for vision models.",
+    )
