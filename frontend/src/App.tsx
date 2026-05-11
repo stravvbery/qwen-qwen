@@ -31,6 +31,7 @@ export default function App() {
   const [selectedDesign, setSelectedDesign] = useState<DesignVariantId>("legacy");
   const [selectedMode, setSelectedMode] = useState<ResponseModeId>("normal");
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<string[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -170,7 +171,8 @@ export default function App() {
 
   const onSubmit = useCallback(async () => {
     const text = input.trim();
-    if (!text || streaming) return;
+    if (streaming) return;
+    if (!text && attachments.length === 0) return;
 
     setError(null);
     setStreaming(true);
@@ -180,6 +182,7 @@ export default function App() {
     const localUserId = `local-user-${Date.now()}`;
     const localAssistantId = `local-assistant-${Date.now()}`;
     const now = new Date().toISOString();
+    const outgoingAttachments = attachments;
     const optimisticMessages: Message[] = [
       {
         id: localUserId,
@@ -187,6 +190,7 @@ export default function App() {
         role: "user",
         content: text,
         model: selectedModel,
+        attachments: outgoingAttachments.length ? outgoingAttachments : null,
         created_at: now,
       },
       {
@@ -214,6 +218,7 @@ export default function App() {
       }
 
       setInput("");
+      setAttachments([]);
       setMessages((prev) => [
         ...prev,
         ...optimisticMessages.map((message) => ({ ...message, chat_id: chatId! })),
@@ -226,9 +231,10 @@ export default function App() {
       await streamMessage(
         chatId!,
         {
-          content: text,
+          content: text || "",
           model: selectedModel,
           system_prompt: selectedModeConfig.systemPrompt,
+          attachments: outgoingAttachments.length ? outgoingAttachments : null,
         },
         {
           onMeta: ({ user_message, assistant_message_id, model }) => {
@@ -312,6 +318,7 @@ export default function App() {
     }
   }, [
     activeId,
+    attachments,
     input,
     messages.length,
     navigate,
@@ -329,8 +336,16 @@ export default function App() {
 
   const modelById = useMemo(() => new Map(models.map((m) => [m.id, m])), [models]);
   const headerModelId = currentChat?.model ?? selectedModel;
+  const activeModelInfo = modelById.get(selectedModel) ?? null;
+  const supportsVision = !!activeModelInfo?.supports_vision;
   const isUpdate = selectedDesign === "update2";
   const isZero = selectedDesign === "zeroSugar";
+
+  // If the user picks a non-vision model after attaching images, drop them so
+  // we don't accidentally send a payload the model can't read.
+  useEffect(() => {
+    if (!supportsVision && attachments.length) setAttachments([]);
+  }, [supportsVision, attachments.length]);
 
   return (
     <div
@@ -424,6 +439,10 @@ export default function App() {
               design={selectedDesign}
               quickActions={QUICK_ACTIONS}
               busy={streaming}
+              attachments={attachments}
+              onAttachmentsChange={setAttachments}
+              supportsVision={supportsVision}
+              onAttachmentError={setError}
             />
           </div>
         </main>
