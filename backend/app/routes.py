@@ -184,6 +184,8 @@ async def post_message(
 
     if chat.model != model_id:
         chat.model = model_id
+    if payload.system_prompt is not None:
+        chat.system_prompt = payload.system_prompt or None
 
     user_msg = Message(chat_id=chat.id, role="user", content=payload.content, model=model_id)
     db.add(user_msg)

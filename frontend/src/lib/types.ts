@@ -28,3 +28,14 @@ export interface Chat {
 export interface ChatDetail extends Chat {
   messages: Message[];
 }
+
+export type DesignVariantId = "legacy" | "update2" | "zeroSugar";
+
+export type ResponseModeId =
+  | "normal"
+  | "coder"
+  | "teacher"
+  | "reviewer"
+  | "creative"
+  | "brief"
+  | "researcher";
