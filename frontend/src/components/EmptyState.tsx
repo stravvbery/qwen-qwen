@@ -37,22 +37,26 @@ export function EmptyState({ onPick, design, mode, promptSeed }: EmptyStateProps
     return (
       <div className="flex-1 overflow-y-auto px-4 py-8">
         <div className="mx-auto grid max-w-6xl gap-5 lg:grid-cols-[1.1fr_0.9fr]">
-          <section className="relative overflow-hidden rounded-[2.5rem] border border-white/30 bg-white/65 p-8 shadow-[0_30px_120px_-55px_rgba(15,23,42,1)] backdrop-blur-2xl">
-            <div className="absolute -right-24 -top-24 h-64 w-64 rounded-full bg-fuchsia-400/30 blur-3xl" />
-            <div className="absolute -bottom-28 left-12 h-72 w-72 rounded-full bg-cyan-300/30 blur-3xl" />
+          <section className="relative overflow-hidden rounded-3xl border border-white/60 bg-white/75 p-8 shadow-[0_20px_60px_-30px_rgba(15,23,42,0.35)] backdrop-blur-xl">
+            <div className="absolute -right-24 -top-24 h-64 w-64 rounded-full bg-indigo-300/35 blur-3xl" />
+            <div className="absolute -bottom-28 left-12 h-72 w-72 rounded-full bg-sky-200/40 blur-3xl" />
             <div className="relative">
-              <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-white/50 bg-white/70 px-4 py-2 text-xs font-bold uppercase tracking-[0.22em] text-slate-700">
-                <Rocket className="h-4 w-4 text-fuchsia-500" />
-                Update 2.0 live deck
+              <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-indigo-200/70 bg-white/80 px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.22em] text-indigo-700">
+                <Rocket className="h-3.5 w-3.5" />
+                Update 2.0
               </div>
-              <h1 className="max-w-2xl text-5xl font-black leading-[0.95] tracking-[-0.06em] text-slate-950 sm:text-7xl">
-                Чат, который больше не выглядит как обычный чат.
+              <h1 className="max-w-2xl text-4xl font-semibold leading-[1.05] tracking-[-0.025em] text-slate-950 sm:text-5xl">
+                Чистый чат — без визуального шума,
+                <span className="bg-gradient-to-r from-indigo-600 via-violet-500 to-cyan-500 bg-clip-text text-transparent">
+                  {" "}с фокусом на вводе.
+                </span>
               </h1>
-              <p className="mt-5 max-w-xl text-base leading-7 text-slate-600">
-                Командная панель, живые prompt-карточки, режимы ответа и быстрые
-                действия собраны в один яркий cockpit для Fireworks-моделей.
+              <p className="mt-4 max-w-xl text-[15px] leading-7 text-slate-600">
+                Командная панель, prompt-карточки, режимы ответа и быстрые
+                действия собраны в одно место. Без лишних блёсток, только
+                осмысленные детали.
               </p>
-              <div className="mt-8 grid gap-3 sm:grid-cols-3">
+              <div className="mt-7 grid gap-3 sm:grid-cols-3">
                 {[
                   ["Дизайн", activeDesign.label],
                   ["Режим", activeMode.label],
@@ -60,22 +64,23 @@ export function EmptyState({ onPick, design, mode, promptSeed }: EmptyStateProps
                 ].map(([label, value]) => (
                   <div
                     key={label}
-                    className="rounded-3xl border border-white/40 bg-white/60 p-4 shadow-sm"
+                    className="rounded-2xl border border-white/70 bg-white/70 p-4 shadow-[0_1px_0_rgba(255,255,255,0.7)_inset,0_6px_18px_-12px_rgba(15,23,42,0.25)] transition-transform hover:-translate-y-0.5"
                   >
-                    <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-slate-400">
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
                       {label}
                     </div>
-                    <div className="mt-2 text-sm font-bold text-slate-950">{value}</div>
+                    <div className="mt-1.5 text-sm font-semibold text-slate-900">{value}</div>
                   </div>
                 ))}
               </div>
             </div>
           </section>
 
-          <section className="rounded-[2rem] border border-white/30 bg-slate-950 p-5 text-white shadow-[0_30px_120px_-50px_rgba(15,23,42,1)]">
-            <div className="mb-4 flex items-center justify-between">
+          <section className="relative overflow-hidden rounded-3xl border border-slate-800/80 bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 p-5 text-white shadow-[0_20px_60px_-30px_rgba(15,23,42,0.5)]">
+            <div className="absolute -right-16 -top-16 h-44 w-44 rounded-full bg-indigo-500/20 blur-3xl" />
+            <div className="relative mb-4 flex items-center justify-between">
               <div>
-                <div className="text-xs font-bold uppercase tracking-[0.22em] text-fuchsia-300">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-indigo-300">
                   Prompt deck
                 </div>
                 <div className="mt-1 text-sm text-white/55">
@@ -83,7 +88,9 @@ export function EmptyState({ onPick, design, mode, promptSeed }: EmptyStateProps
                 </div>
               </div>
             </div>
-            <PromptGrid prompts={visiblePrompts} onPick={onPick} design={design} />
+            <div className="relative">
+              <PromptGrid prompts={visiblePrompts} onPick={onPick} design={design} />
+            </div>
           </section>
         </div>
       </div>
@@ -163,7 +170,7 @@ function PromptGrid({
           className={clsx(
             "group text-left text-sm transition-all duration-200",
             design === "update2"
-              ? "rounded-3xl border border-white/10 bg-white/[0.06] p-4 text-white hover:-translate-y-0.5 hover:bg-white/[0.12]"
+              ? "rounded-2xl border border-white/10 bg-white/[0.05] p-4 text-white hover:-translate-y-0.5 hover:border-indigo-300/40 hover:bg-white/[0.1]"
               : design === "zeroSugar"
                 ? "rounded-none border border-border-muted bg-transparent px-3 py-3 font-mono text-xs uppercase leading-relaxed text-text hover:bg-surface-2"
                 : "rounded-lg border border-border-muted bg-surface-2 px-4 py-3 text-text hover:border-border hover:bg-surface-3",
@@ -171,8 +178,8 @@ function PromptGrid({
         >
           <span
             className={clsx(
-              "mb-2 inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.2em]",
-              design === "update2" ? "text-cyan-200" : "text-text-subtle",
+              "mb-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.2em]",
+              design === "update2" ? "text-indigo-200" : "text-text-subtle",
             )}
           >
             {design === "update2" ? <Wand2 className="h-3 w-3" /> : null}

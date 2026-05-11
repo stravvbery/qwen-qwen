@@ -185,7 +185,7 @@ export function Composer({
         className={clsx(
           "mx-auto flex items-end gap-2 border transition-colors duration-150",
           isUpdate
-            ? "max-w-5xl rounded-[1.75rem] border-white/40 bg-white/70 p-3 shadow-[0_24px_80px_-36px_rgba(15,23,42,0.95)] backdrop-blur-2xl focus-within:border-fuchsia-300"
+            ? "max-w-5xl rounded-2xl border-white/70 bg-white/80 p-3 shadow-[0_10px_40px_-22px_rgba(15,23,42,0.35)] backdrop-blur-xl focus-within:border-indigo-300 focus-within:shadow-[0_14px_44px_-22px_rgba(79,70,229,0.45)]"
             : isZero
               ? "max-w-4xl rounded-none border-border bg-bg p-1 focus-within:border-text"
               : "max-w-3xl rounded-xl border-border bg-surface-2 p-2 shadow-raised focus-within:border-accent",
