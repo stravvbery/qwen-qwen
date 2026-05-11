@@ -334,9 +334,12 @@ async def post_message(
             current_messages.append({
                 "role": "system",
                 "content": (
-                    "The user has requested a web search. You MUST use the "
-                    "web_search tool to find current information before answering. "
-                    "Do not answer from memory alone."
+                    "The user has enabled web search for this turn. Use the "
+                    "web_search tool to ground your answer in current sources "
+                    "when relevant, optionally followed by read_webpage on the "
+                    "most useful link. After the search results are returned, "
+                    "stop calling tools and write the final answer for the "
+                    "user. Do not search more than necessary."
                 ),
             })
 
@@ -360,7 +363,11 @@ async def post_message(
         max_tool_rounds = 5
 
         try:
-            for _round in range(max_tool_rounds + 1):
+            for _round in range(max_tool_rounds):
+                # Tool calls are merged by their stable ``index`` field, since
+                # OpenAI-style streams emit ``id``/``name`` only on the first
+                # fragment and split ``arguments`` across many chunks for that
+                # same index.
                 pending_tool_calls: dict[int, ToolCall] = {}
 
                 async for delta in stream_chat(
@@ -385,16 +392,32 @@ async def post_message(
                         )
 
                     for tc in delta.tool_calls:
-                        idx = len(pending_tool_calls)
-                        if tc.id:
-                            pending_tool_calls[idx] = ToolCall(
-                                id=tc.id, name=tc.name, arguments=tc.arguments
+                        existing = pending_tool_calls.get(tc.index)
+                        if existing is None:
+                            pending_tool_calls[tc.index] = ToolCall(
+                                id=tc.id,
+                                name=tc.name,
+                                arguments=tc.arguments,
+                                index=tc.index,
                             )
-                        elif pending_tool_calls:
-                            last_idx = max(pending_tool_calls)
-                            pending_tool_calls[last_idx].arguments += tc.arguments
+                        else:
+                            if tc.id and not existing.id:
+                                existing.id = tc.id
+                            if tc.name and not existing.name:
+                                existing.name = tc.name
+                            if tc.arguments:
+                                existing.arguments += tc.arguments
 
                 if not pending_tool_calls:
+                    break
+
+                # Drop malformed entries (missing id or name) — submitting
+                # them back to the model would either be rejected or trigger
+                # another tool-call loop.
+                valid_calls = [
+                    tc for tc in pending_tool_calls.values() if tc.id and tc.name
+                ]
+                if not valid_calls:
                     break
 
                 assistant_tc_msg: dict[str, object] = {
@@ -406,15 +429,15 @@ async def post_message(
                             "type": "function",
                             "function": {
                                 "name": tc.name,
-                                "arguments": tc.arguments,
+                                "arguments": tc.arguments or "{}",
                             },
                         }
-                        for tc in pending_tool_calls.values()
+                        for tc in valid_calls
                     ],
                 }
                 current_messages.append(assistant_tc_msg)
 
-                for tc in pending_tool_calls.values():
+                for tc in valid_calls:
                     yield _sse(
                         "tool_status",
                         {"tool": tc.name, "status": "running", "arguments": tc.arguments},
@@ -434,12 +457,41 @@ async def post_message(
                     current_messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
+                        "name": tc.name,
                         "content": result,
                     })
 
                 content_buf.clear()
                 reasoning_buf.clear()
                 finish_reason = None
+            else:
+                # Hit max_tool_rounds without the model producing a final
+                # textual answer. Force one more pass with tools disabled so
+                # the model must summarise the tool results instead of
+                # endlessly requesting more searches.
+                content_buf.clear()
+                reasoning_buf.clear()
+                finish_reason = None
+                async for delta in stream_chat(
+                    model=model_id,
+                    messages=current_messages,
+                    tools=None,
+                ):
+                    assert isinstance(delta, StreamDelta)
+                    if delta.content:
+                        content_buf.append(delta.content)
+                    if delta.reasoning:
+                        reasoning_buf.append(delta.reasoning)
+                    if delta.finish_reason:
+                        finish_reason = delta.finish_reason
+                    if delta.content or delta.reasoning:
+                        yield _sse(
+                            "delta",
+                            {
+                                "content": delta.content,
+                                "reasoning": delta.reasoning,
+                            },
+                        )
 
         except FireworksError as exc:
             async with SessionLocal() as session:

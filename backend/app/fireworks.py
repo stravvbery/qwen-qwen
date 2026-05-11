@@ -18,11 +18,18 @@ class FireworksError(RuntimeError):
 
 @dataclass(slots=True)
 class ToolCall:
-    """Accumulated tool call from streaming chunks."""
+    """Accumulated tool call from streaming chunks.
+
+    ``index`` identifies which parallel tool call a delta belongs to.
+    OpenAI-style streams send a stable ``index`` per call across fragments,
+    so callers should merge name/arguments deltas by index rather than by
+    arrival order.
+    """
 
     id: str = ""
     name: str = ""
     arguments: str = ""
+    index: int = 0
 
 
 @dataclass(slots=True)
@@ -118,11 +125,14 @@ async def stream_chat(
                 raw_tcs = delta.get("tool_calls") or []
                 for tc in raw_tcs:
                     fn = tc.get("function") or {}
+                    raw_index = tc.get("index")
+                    tc_index = int(raw_index) if isinstance(raw_index, int) else 0
                     tc_list.append(
                         ToolCall(
                             id=tc.get("id") or "",
                             name=fn.get("name") or "",
                             arguments=fn.get("arguments") or "",
+                            index=tc_index,
                         )
                     )
 

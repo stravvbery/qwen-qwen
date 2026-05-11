@@ -154,8 +154,14 @@ export function MessageBubble({ message, isStreaming, design }: MessageBubblePro
               <Markdown>{message.content}</Markdown>
             ) : isStreaming ? (
               <span className="inline-block w-2 h-4 bg-text-muted animate-blink align-middle" />
+            ) : message.reasoning ? (
+              <span className="text-text-subtle italic">
+                (модель не вернула финальный ответ — см. блок «Размышления» выше)
+              </span>
             ) : (
-              <span className="text-text-subtle italic">(пустой ответ)</span>
+              <span className="text-text-subtle italic">
+                (пустой ответ — попробуй ещё раз или смени модель)
+              </span>
             )}
             {!isUser && isStreaming && message.content && (
               <span className="inline-block w-2 h-4 bg-text-muted animate-blink align-middle ml-0.5" />
