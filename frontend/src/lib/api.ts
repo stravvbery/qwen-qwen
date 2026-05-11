@@ -25,6 +25,15 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface SearchStatus {
+  enabled: boolean;
+  providers: {
+    tavily: boolean;
+    serper: boolean;
+    firecrawl: boolean;
+  };
+}
+
 export const api = {
   listModels: () => jsonFetch<ModelInfo[]>("/models"),
   listChats: () => jsonFetch<Chat[]>("/chats"),
@@ -37,9 +46,17 @@ export const api = {
   ) => jsonFetch<Chat>(`/chats/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteChat: (id: string) =>
     jsonFetch<void>(`/chats/${id}`, { method: "DELETE" }),
+  searchStatus: () => jsonFetch<SearchStatus>("/search/status"),
 };
 
 // --- SSE streaming -----------------------------------------------------------
+
+export interface ToolStatusEvent {
+  tool: string;
+  status: "running" | "done";
+  arguments?: string;
+  result_preview?: string;
+}
 
 export interface StreamCallbacks {
   onMeta?: (data: {
@@ -51,6 +68,7 @@ export interface StreamCallbacks {
   onTitle?: (title: string) => void;
   onDone?: (data: { assistant_message: Message; finish_reason: string | null }) => void;
   onError?: (message: string) => void;
+  onToolStatus?: (data: ToolStatusEvent) => void;
 }
 
 export async function streamMessage(
@@ -60,6 +78,7 @@ export async function streamMessage(
     model?: string;
     system_prompt?: string | null;
     attachments?: string[] | null;
+    web_search?: boolean;
   },
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
@@ -142,6 +161,9 @@ function dispatchEvent(event: string, data: unknown, cb: StreamCallbacks) {
       break;
     case "error":
       if (typeof obj.message === "string") cb.onError?.(obj.message);
+      break;
+    case "tool_status":
+      cb.onToolStatus?.(obj as never);
       break;
   }
 }

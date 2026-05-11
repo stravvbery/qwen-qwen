@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 
@@ -13,6 +14,15 @@ from .config import settings
 
 class FireworksError(RuntimeError):
     """Raised when Fireworks returns a non-2xx response."""
+
+
+@dataclass(slots=True)
+class ToolCall:
+    """Accumulated tool call from streaming chunks."""
+
+    id: str = ""
+    name: str = ""
+    arguments: str = ""
 
 
 @dataclass(slots=True)
@@ -26,6 +36,7 @@ class StreamDelta:
     content: str = ""
     reasoning: str = ""
     finish_reason: str | None = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
 
 
 def _auth_headers() -> dict[str, str]:
@@ -45,9 +56,10 @@ def _auth_headers() -> dict[str, str]:
 async def stream_chat(
     *,
     model: str,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     temperature: float = 0.7,
     max_tokens: int | None = 4096,
+    tools: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[StreamDelta]:
     """Stream chat completion chunks from Fireworks.
 
@@ -63,6 +75,8 @@ async def stream_chat(
     }
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
+    if tools:
+        payload["tools"] = tools
 
     url = f"{settings.fireworks_base_url.rstrip('/')}/chat/completions"
     timeout = httpx.Timeout(settings.request_timeout_seconds, connect=15.0)
@@ -81,7 +95,7 @@ async def stream_chat(
                 line = raw_line.strip()
                 if not line.startswith("data:"):
                     continue
-                data = line[len("data:") :].strip()
+                data = line[len("data:"):].strip()
                 if data == "[DONE]":
                     return
                 try:
@@ -99,9 +113,56 @@ async def stream_chat(
                 reasoning_piece = delta.get("reasoning_content") or ""
                 finish = choice.get("finish_reason")
 
-                if content_piece or reasoning_piece or finish:
+                # Parse tool calls from delta
+                tc_list: list[ToolCall] = []
+                raw_tcs = delta.get("tool_calls") or []
+                for tc in raw_tcs:
+                    fn = tc.get("function") or {}
+                    tc_list.append(
+                        ToolCall(
+                            id=tc.get("id") or "",
+                            name=fn.get("name") or "",
+                            arguments=fn.get("arguments") or "",
+                        )
+                    )
+
+                if content_piece or reasoning_piece or finish or tc_list:
                     yield StreamDelta(
                         content=content_piece,
                         reasoning=reasoning_piece,
                         finish_reason=finish,
+                        tool_calls=tc_list,
                     )
+
+
+async def chat_completion(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    temperature: float = 0.7,
+    max_tokens: int | None = 4096,
+    tools: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Non-streaming chat completion (used for tool-call round-trips)."""
+
+    payload: dict[str, object] = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "temperature": temperature,
+    }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    if tools:
+        payload["tools"] = tools
+
+    url = f"{settings.fireworks_base_url.rstrip('/')}/chat/completions"
+    timeout = httpx.Timeout(settings.request_timeout_seconds, connect=15.0)
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(url, headers=_auth_headers(), json=payload)
+        if resp.status_code >= 400:
+            raise FireworksError(
+                f"Fireworks API returned {resp.status_code}: {resp.text[:500]}"
+            )
+        return resp.json()

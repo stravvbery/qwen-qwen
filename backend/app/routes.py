@@ -13,8 +13,9 @@ from sqlalchemy.orm import selectinload
 
 from . import schemas
 from .db import get_session
-from .fireworks import FireworksError, StreamDelta, stream_chat
+from .fireworks import FireworksError, StreamDelta, ToolCall, stream_chat
 from .models import Chat, Message
+from .web_tools import TOOL_DEFINITIONS, execute_tool_call, has_any_provider
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -125,6 +126,21 @@ async def health() -> dict[str, str]:
 @router.get("/models", response_model=list[schemas.ModelInfo])
 async def list_models() -> list[schemas.ModelInfo]:
     return MODELS
+
+
+@router.get("/search/status")
+async def search_status() -> dict[str, object]:
+    """Return which search providers are configured."""
+    from .config import settings
+
+    return {
+        "enabled": has_any_provider(),
+        "providers": {
+            "tavily": bool(settings.tavily_api_key),
+            "serper": bool(settings.serper_api_key),
+            "firecrawl": bool(settings.firecrawl_api_key),
+        },
+    }
 
 
 @router.get("/chats", response_model=list[schemas.ChatOut])
@@ -302,14 +318,27 @@ async def post_message(
 
     await db.commit()
 
+    use_tools = payload.web_search or has_any_provider()
+    tools = TOOL_DEFINITIONS if use_tools else None
+    force_search = payload.web_search
+
     async def event_stream() -> AsyncIterator[str]:
-        # Use a fresh session inside the streaming generator — the dependency-
-        # provided session is closed once this function returns.
         from .db import SessionLocal
 
         content_buf: list[str] = []
         reasoning_buf: list[str] = []
         finish_reason: str | None = None
+        current_messages = list(fw_messages)
+
+        if force_search:
+            current_messages.append({
+                "role": "system",
+                "content": (
+                    "The user has requested a web search. You MUST use the "
+                    "web_search tool to find current information before answering. "
+                    "Do not answer from memory alone."
+                ),
+            })
 
         yield _sse(
             "meta",
@@ -328,23 +357,90 @@ async def post_message(
             },
         )
 
+        max_tool_rounds = 5
+
         try:
-            async for delta in stream_chat(model=model_id, messages=fw_messages):
-                assert isinstance(delta, StreamDelta)
-                if delta.content:
-                    content_buf.append(delta.content)
-                if delta.reasoning:
-                    reasoning_buf.append(delta.reasoning)
-                if delta.finish_reason:
-                    finish_reason = delta.finish_reason
-                if delta.content or delta.reasoning:
-                    yield _sse(
-                        "delta",
+            for _round in range(max_tool_rounds + 1):
+                pending_tool_calls: dict[int, ToolCall] = {}
+
+                async for delta in stream_chat(
+                    model=model_id,
+                    messages=current_messages,
+                    tools=tools,
+                ):
+                    assert isinstance(delta, StreamDelta)
+                    if delta.content:
+                        content_buf.append(delta.content)
+                    if delta.reasoning:
+                        reasoning_buf.append(delta.reasoning)
+                    if delta.finish_reason:
+                        finish_reason = delta.finish_reason
+                    if delta.content or delta.reasoning:
+                        yield _sse(
+                            "delta",
+                            {
+                                "content": delta.content,
+                                "reasoning": delta.reasoning,
+                            },
+                        )
+
+                    for tc in delta.tool_calls:
+                        idx = len(pending_tool_calls)
+                        if tc.id:
+                            pending_tool_calls[idx] = ToolCall(
+                                id=tc.id, name=tc.name, arguments=tc.arguments
+                            )
+                        elif pending_tool_calls:
+                            last_idx = max(pending_tool_calls)
+                            pending_tool_calls[last_idx].arguments += tc.arguments
+
+                if not pending_tool_calls:
+                    break
+
+                assistant_tc_msg: dict[str, object] = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
                         {
-                            "content": delta.content,
-                            "reasoning": delta.reasoning,
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": tc.arguments,
+                            },
+                        }
+                        for tc in pending_tool_calls.values()
+                    ],
+                }
+                current_messages.append(assistant_tc_msg)
+
+                for tc in pending_tool_calls.values():
+                    yield _sse(
+                        "tool_status",
+                        {"tool": tc.name, "status": "running", "arguments": tc.arguments},
+                    )
+
+                    result = await execute_tool_call(tc.name, tc.arguments)
+
+                    yield _sse(
+                        "tool_status",
+                        {
+                            "tool": tc.name,
+                            "status": "done",
+                            "result_preview": result[:300] if result else "",
                         },
                     )
+
+                    current_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result,
+                    })
+
+                content_buf.clear()
+                reasoning_buf.clear()
+                finish_reason = None
+
         except FireworksError as exc:
             async with SessionLocal() as session:
                 msg = await session.get(Message, assistant_msg_id)

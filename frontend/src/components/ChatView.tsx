@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, Globe, Loader2 } from "lucide-react";
 import type { DesignVariantId, Message } from "../lib/types";
+import type { ToolStatusEvent } from "../lib/api";
 import { MessageBubble } from "./MessageBubble";
 
 interface ChatViewProps {
@@ -9,13 +10,22 @@ interface ChatViewProps {
   streamingId: string | null;
   error: string | null;
   design: DesignVariantId;
+  toolStatus?: ToolStatusEvent | null;
 }
 
 // How close to the bottom (in pixels) we treat as "at bottom". Anything within
 // this distance keeps the auto-follow behavior; further up unsticks it.
 const STICK_THRESHOLD = 80;
 
-export function ChatView({ messages, streamingId, error, design }: ChatViewProps) {
+function toolLabel(tool: string): string {
+  switch (tool) {
+    case "web_search": return "Поиск в интернете";
+    case "read_webpage": return "Чтение страницы";
+    default: return tool;
+  }
+}
+
+export function ChatView({ messages, streamingId, error, design, toolStatus }: ChatViewProps) {
   const ref = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
@@ -97,6 +107,29 @@ export function ChatView({ messages, streamingId, error, design }: ChatViewProps
               design={design}
             />
           ))}
+          {toolStatus && (
+            <div
+              className={clsx(
+                "flex items-center gap-2 rounded-lg border px-4 py-3 text-sm",
+                design === "update2"
+                  ? "themed-surface border-[color:var(--accent)]/30 text-[color:var(--accent)]"
+                  : design === "zeroSugar"
+                    ? "rounded-none border-text/20 bg-bg font-mono text-text-muted uppercase tracking-[0.12em]"
+                    : "border-accent/30 bg-accent/5 text-accent",
+              )}
+            >
+              {toolStatus.status === "running" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Globe className="h-4 w-4" />
+              )}
+              <span>
+                {toolLabel(toolStatus.tool)}
+                {toolStatus.status === "running" && "…"}
+                {toolStatus.status === "done" && " — готово"}
+              </span>
+            </div>
+          )}
           {error && (
             <div className="rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
               {error}

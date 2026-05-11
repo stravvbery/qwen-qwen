@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import clsx from "clsx";
-import { api, streamMessage } from "./lib/api";
+import { api, streamMessage, type SearchStatus, type ToolStatusEvent } from "./lib/api";
 import type { Chat, ChatDetail, Message, ModelInfo } from "./lib/types";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
@@ -44,6 +44,9 @@ export default function App() {
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [promptSeed, setPromptSeed] = useState(() => Math.floor(Math.random() * 10000));
+  const [webSearch, setWebSearch] = useState(false);
+  const [searchAvailable, setSearchAvailable] = useState(false);
+  const [toolStatus, setToolStatus] = useState<ToolStatusEvent | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const currentChatId = currentChat?.id ?? null;
@@ -53,10 +56,15 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const [m, c] = await Promise.all([api.listModels(), api.listChats()]);
+        const [m, c, ss] = await Promise.all([
+          api.listModels(),
+          api.listChats(),
+          api.searchStatus().catch(() => ({ enabled: false }) as SearchStatus),
+        ]);
         if (cancelled) return;
         setModels(m);
         setChats(c);
+        setSearchAvailable(ss.enabled);
         if (m.length && !selectedModel) setSelectedModel(m[0].id);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Не удалось загрузить данные");
@@ -236,6 +244,8 @@ export default function App() {
       const controller = new AbortController();
       abortRef.current = controller;
 
+      setToolStatus(null);
+
       await streamMessage(
         chatId!,
         {
@@ -243,6 +253,7 @@ export default function App() {
           model: selectedModel,
           system_prompt: selectedModeConfig.systemPrompt,
           attachments: outgoingAttachments.length ? outgoingAttachments : null,
+          web_search: webSearch || undefined,
         },
         {
           onMeta: ({ user_message, assistant_message_id, model }) => {
@@ -303,9 +314,13 @@ export default function App() {
               });
             }
           },
+          onToolStatus: (data) => {
+            setToolStatus(data);
+          },
           onError: (message) => {
             setError(message);
             setStreamingId(null);
+            setToolStatus(null);
           },
         },
         controller.signal,
@@ -322,6 +337,7 @@ export default function App() {
     } finally {
       setStreaming(false);
       setStreamingId(null);
+      setToolStatus(null);
       abortRef.current = null;
     }
   }, [
@@ -333,6 +349,7 @@ export default function App() {
     selectedModeConfig.systemPrompt,
     selectedModel,
     streaming,
+    webSearch,
   ]);
 
   const onStop = useCallback(() => {
@@ -439,6 +456,7 @@ export default function App() {
               streamingId={streamingId}
               error={error}
               design={selectedDesign}
+              toolStatus={toolStatus}
             />
           )}
 
@@ -455,6 +473,9 @@ export default function App() {
               onAttachmentsChange={setAttachments}
               supportsVision={supportsVision}
               onAttachmentError={setError}
+              webSearch={webSearch}
+              onWebSearchChange={setWebSearch}
+              searchAvailable={searchAvailable}
             />
           </div>
         </main>
