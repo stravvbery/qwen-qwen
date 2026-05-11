@@ -37,21 +37,30 @@ export function EmptyState({ onPick, design, mode, promptSeed }: EmptyStateProps
     return (
       <div className="flex-1 overflow-y-auto px-4 py-8">
         <div className="mx-auto grid max-w-6xl gap-5 lg:grid-cols-[1.1fr_0.9fr]">
-          <section className="relative overflow-hidden rounded-3xl border border-white/60 bg-white/75 p-8 shadow-[0_20px_60px_-30px_rgba(15,23,42,0.35)] backdrop-blur-xl">
-            <div className="absolute -right-24 -top-24 h-64 w-64 rounded-full bg-indigo-300/35 blur-3xl" />
-            <div className="absolute -bottom-28 left-12 h-72 w-72 rounded-full bg-sky-200/40 blur-3xl" />
+          <section className="themed-surface relative overflow-hidden rounded-3xl border p-8 shadow-[0_20px_60px_-30px_rgba(15,23,42,0.35)] backdrop-blur-xl">
+            <div
+              className="absolute -right-24 -top-24 h-64 w-64 rounded-full blur-3xl opacity-50"
+              style={{ backgroundColor: "var(--aurora-1)" }}
+            />
+            <div
+              className="absolute -bottom-28 left-12 h-72 w-72 rounded-full blur-3xl opacity-50"
+              style={{ backgroundColor: "var(--aurora-2)" }}
+            />
             <div className="relative">
-              <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-indigo-200/70 bg-white/80 px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.22em] text-indigo-700">
+              <div className="themed-surface-strong mb-6 inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.22em] text-[color:var(--accent)]">
                 <Rocket className="h-3.5 w-3.5" />
                 Update 2.0
               </div>
-              <h1 className="max-w-2xl text-4xl font-semibold leading-[1.05] tracking-[-0.025em] text-slate-950 sm:text-5xl">
+              <h1 className="max-w-2xl text-4xl font-semibold leading-[1.05] tracking-[-0.025em] text-text sm:text-5xl">
                 Чистый чат — без визуального шума,
-                <span className="bg-gradient-to-r from-indigo-600 via-violet-500 to-cyan-500 bg-clip-text text-transparent">
+                <span
+                  className="bg-clip-text text-transparent"
+                  style={{ backgroundImage: "var(--accent-gradient)" }}
+                >
                   {" "}с фокусом на вводе.
                 </span>
               </h1>
-              <p className="mt-4 max-w-xl text-[15px] leading-7 text-slate-600">
+              <p className="mt-4 max-w-xl text-[15px] leading-7 text-text-muted">
                 Командная панель, prompt-карточки, режимы ответа и быстрые
                 действия собраны в одно место. Без лишних блёсток, только
                 осмысленные детали.
@@ -64,12 +73,12 @@ export function EmptyState({ onPick, design, mode, promptSeed }: EmptyStateProps
                 ].map(([label, value]) => (
                   <div
                     key={label}
-                    className="rounded-2xl border border-white/70 bg-white/70 p-4 shadow-[0_1px_0_rgba(255,255,255,0.7)_inset,0_6px_18px_-12px_rgba(15,23,42,0.25)] transition-transform hover:-translate-y-0.5"
+                    className="themed-surface rounded-2xl border p-4 shadow-[0_1px_0_rgba(255,255,255,0.7)_inset,0_6px_18px_-12px_rgba(15,23,42,0.25)] transition-transform hover:-translate-y-0.5"
                   >
-                    <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-text-subtle">
                       {label}
                     </div>
-                    <div className="mt-1.5 text-sm font-semibold text-slate-900">{value}</div>
+                    <div className="mt-1.5 text-sm font-semibold text-text">{value}</div>
                   </div>
                 ))}
               </div>
