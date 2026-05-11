@@ -1,5 +1,9 @@
 # Grebeshok Chat
 
+> **Новая Devin-сессия?** Открой [`SESSION_HANDOFF.md`](SESSION_HANDOFF.md)
+> — там точка входа: контекст, что сделано, что осталось, и готовый
+> prompt чтобы продолжить ровно с этого места.
+
 Personal AI chat web app powered by the [Fireworks AI](https://fireworks.ai)
 API. Custom UI inspired by modern chat clients (Claude, ChatGPT) with chat
 history persisted on the server.
