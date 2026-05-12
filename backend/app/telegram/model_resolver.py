@@ -21,6 +21,7 @@ class ModelEntry:
     label: str
     provider: str  # "fireworks" | "freetheai"
     aliases: tuple[str, ...]  # lowercase trigger words
+    supports_vision: bool = False
 
 
 MODELS: list[ModelEntry] = [
@@ -40,6 +41,7 @@ MODELS: list[ModelEntry] = [
         aliases=(
             "kimi", "кими", "кімі", "k2", "к2",
         ),
+        supports_vision=True,
     ),
     ModelEntry(
         id="accounts/fireworks/models/qwen3p6-plus",
@@ -48,6 +50,7 @@ MODELS: list[ModelEntry] = [
         aliases=(
             "qwen", "квен", "квін", "кьюэн", "кюэн", "qwen3",
         ),
+        supports_vision=True,
     ),
     ModelEntry(
         id="accounts/fireworks/models/minimax-m2p7",
@@ -140,3 +143,42 @@ def resolve(text: str) -> ResolveResult:
     # No match — random model, full text is the prompt
     model = random.choice(MODELS)
     return ResolveResult(model=model, prompt=stripped, was_explicit=False)
+
+
+# ---------------------------------------------------------------------------
+# Vision model picker
+# ---------------------------------------------------------------------------
+
+# Preferred order when the user attaches a photo: Kimi first, Qwen as fallback.
+# Only these two vision-capable models are known to reliably handle images on
+# Fireworks — the other models on the bot either don't support vision at all
+# or misbehave with image inputs.
+_VISION_PRIORITY: tuple[str, ...] = (
+    "accounts/fireworks/models/kimi-k2p6",
+    "accounts/fireworks/models/qwen3p6-plus",
+)
+
+
+def pick_vision_model(preferred: ModelEntry | None = None) -> ModelEntry:
+    """Return a vision-capable model.
+
+    If ``preferred`` is already vision-capable — return it as-is so the user's
+    explicit choice (e.g. "квен опиши фото") is honoured. Otherwise fall back
+    to the first available model from :data:`_VISION_PRIORITY`.
+    """
+    if preferred is not None and preferred.supports_vision:
+        return preferred
+
+    by_id = {m.id: m for m in MODELS}
+    for model_id in _VISION_PRIORITY:
+        model = by_id.get(model_id)
+        if model is not None and model.supports_vision:
+            return model
+
+    # Last-resort: any vision model we happen to know about.
+    for model in MODELS:
+        if model.supports_vision:
+            return model
+
+    # Should never happen: the bot ships with Kimi + Qwen as vision models.
+    raise RuntimeError("No vision-capable model configured")
