@@ -2,7 +2,7 @@
 
 Scans the entire message for a known model alias (any position, not just
 the start).  Supports Russian/English aliases, typos, and variations.
-If no model keyword is found — picks a random model.
+If no model keyword is found — picks a random model from the pool.
 """
 
 from __future__ import annotations
@@ -21,9 +21,14 @@ class ModelEntry:
     label: str
     provider: str  # "fireworks" | "freetheai"
     aliases: tuple[str, ...]  # lowercase trigger words
+    supports_tools: bool = True  # whether the model can use web_search tools
+    in_random_pool: bool = True  # whether included in random selection
+    fallback_id: str = ""  # fallback model id if primary fails
+    supports_vision: bool = False  # whether the model accepts image inputs
 
 
 MODELS: list[ModelEntry] = [
+    # --- Fireworks (all support tools via our proxy) ---
     ModelEntry(
         id="accounts/fireworks/models/deepseek-v4-pro",
         label="DeepSeek V4 Pro",
@@ -32,6 +37,7 @@ MODELS: list[ModelEntry] = [
             "deepseek", "дипсик", "дипсік", "діпсік", "deep", "ds",
             "дс", "дип", "дипси", "deepseek-v4",
         ),
+        in_random_pool=False,  # too slow for random, explicit only
     ),
     ModelEntry(
         id="accounts/fireworks/models/kimi-k2p6",
@@ -40,6 +46,8 @@ MODELS: list[ModelEntry] = [
         aliases=(
             "kimi", "кими", "кімі", "k2", "к2",
         ),
+        supports_tools=False,
+        supports_vision=True,
     ),
     ModelEntry(
         id="accounts/fireworks/models/qwen3p6-plus",
@@ -48,6 +56,7 @@ MODELS: list[ModelEntry] = [
         aliases=(
             "qwen", "квен", "квін", "кьюэн", "кюэн", "qwen3",
         ),
+        supports_vision=True,
     ),
     ModelEntry(
         id="accounts/fireworks/models/minimax-m2p7",
@@ -64,18 +73,21 @@ MODELS: list[ModelEntry] = [
         aliases=(
             "glm", "глм", "zhipu", "жипу",
         ),
+        supports_tools=False,
     ),
+
+    # --- FreeTheAI: bbg backend ---
     ModelEntry(
-        id="cat/gpt-5.5",
-        label="GPT-5.5",
+        id="bbg/deepseek-ai/DeepSeek-V4-Flash",
+        label="DeepSeek V4 Flash",
         provider="freetheai",
-        aliases=(
-            "gpt", "гпт", "chatgpt", "чатгпт", "openai", "опенаи",
-            "опенай", "gpt5", "гпт5", "гпт-5",
-        ),
+        aliases=("дипсик1", "dsflash", "дсфлеш", "deepseekflash"),
+        supports_tools=False,
     ),
+
+    # --- FreeTheAI: bbl backend (tools work) ---
     ModelEntry(
-        id="cat/gemini-3-flash",
+        id="bbl/gemini-3.0-flash",
         label="Gemini 3 Flash",
         provider="freetheai",
         aliases=(
@@ -84,6 +96,39 @@ MODELS: list[ModelEntry] = [
             "flash", "флеш", "geminiflash", "джеминифлеш", "gf",
             "гф", "флэш",
         ),
+        supports_tools=True,
+        fallback_id="cat/gemini-3-flash",
+    ),
+    ModelEntry(
+        id="bbl/gpt-5-mini",
+        label="GPT-5 Mini",
+        provider="freetheai",
+        aliases=(
+            "gptmini", "гптмини", "gpt5mini", "гпт5мини", "мини",
+        ),
+        supports_tools=True,
+    ),
+
+    # --- FreeTheAI: cat backend ---
+    ModelEntry(
+        id="cat/gpt-5.5",
+        label="GPT-5.5",
+        provider="freetheai",
+        aliases=(
+            "gpt", "гпт", "chatgpt", "чатгпт", "openai", "опенаи",
+            "опенай", "gpt5", "гпт5", "гпт-5",
+        ),
+        supports_tools=False,
+    ),
+    ModelEntry(
+        id="cat/claude-4-5-sonnet",
+        label="Claude 4.5 Sonnet",
+        provider="freetheai",
+        aliases=(
+            "claude", "клод", "клауд", "sonnet", "сонет", "антропик",
+            "anthropic",
+        ),
+        supports_tools=False,
     ),
 ]
 
@@ -92,6 +137,35 @@ _ALIAS_MAP: dict[str, ModelEntry] = {}
 for _m in MODELS:
     for _a in _m.aliases:
         _ALIAS_MAP[_a] = _m
+
+# Pool for random selection (excludes models flagged out)
+_RANDOM_POOL: list[ModelEntry] = [m for m in MODELS if m.in_random_pool]
+
+# Models that support web search tools
+SEARCH_MODELS: list[ModelEntry] = [m for m in MODELS if m.supports_tools]
+
+
+# ---------------------------------------------------------------------------
+# Search-need detection
+# ---------------------------------------------------------------------------
+
+_SEARCH_KEYWORDS = re.compile(
+    r"(?i)"
+    r"(?:погод[аеу]|weather|новост[ьией]|news|курс|price|цен[аеуы]|"
+    r"сколько стоит|стоимость|сегодня|вчера|завтра|"
+    r"today|yesterday|tomorrow|текущ|актуальн|последни[йехм]|"
+    r"свежи[йехм]|latest|current|recent|"
+    r"дата выход|когда выйд|release date|when.+(?:release|come out)|"
+    r"счёт|score|результат матч|"
+    r"что случил|что произош|what happened|"
+    r"градус|температур|скок|скольк|щас?\b|сейчас|"
+    r"degrees|temperature|forecast|прогноз)"
+)
+
+
+def needs_search(text: str) -> bool:
+    """Heuristic: does the user's query likely need up-to-date info?"""
+    return bool(_SEARCH_KEYWORDS.search(text))
 
 
 # ---------------------------------------------------------------------------
@@ -111,10 +185,12 @@ def resolve(text: str) -> ResolveResult:
     Scans every word (and consecutive two-word pair) for a known alias.
     The matched keyword is stripped from the prompt so the AI only sees the
     actual question.  If no alias is found — picks a random model.
+    If the query needs current info and the random model can't search,
+    a search-capable model is chosen instead.
     """
     stripped = text.strip()
     if not stripped:
-        model = random.choice(MODELS)
+        model = random.choice(_RANDOM_POOL)
         return ResolveResult(model=model, prompt="", was_explicit=False)
 
     words = stripped.split()
@@ -137,6 +213,48 @@ def resolve(text: str) -> ResolveResult:
             prompt = " ".join(remaining).strip()
             return ResolveResult(model=model, prompt=prompt, was_explicit=True)
 
-    # No match — random model, full text is the prompt
-    model = random.choice(MODELS)
+    # No explicit model — pick random, but prefer search-capable if needed
+    if needs_search(stripped) and SEARCH_MODELS:
+        model = random.choice(SEARCH_MODELS)
+    else:
+        model = random.choice(_RANDOM_POOL)
     return ResolveResult(model=model, prompt=stripped, was_explicit=False)
+
+
+# ---------------------------------------------------------------------------
+# Vision model picker
+# ---------------------------------------------------------------------------
+
+# Preferred order when the user attaches a photo: Kimi first, Qwen as fallback.
+# Only these two models on Fireworks reliably handle image inputs — the
+# remaining models either don't support vision at all or misbehave on images.
+_VISION_PRIORITY: tuple[str, ...] = (
+    "accounts/fireworks/models/kimi-k2p6",
+    "accounts/fireworks/models/qwen3p6-plus",
+)
+
+
+def pick_vision_model(preferred: ModelEntry | None = None) -> ModelEntry:
+    """Return a vision-capable model.
+
+    If ``preferred`` is already vision-capable, return it untouched so an
+    explicit user choice (e.g. caption ''квен опиши фото'') is honoured.
+    Otherwise fall back to the first available model from
+    :data:`_VISION_PRIORITY`.
+    """
+    if preferred is not None and preferred.supports_vision:
+        return preferred
+
+    by_id = {m.id: m for m in MODELS}
+    for model_id in _VISION_PRIORITY:
+        model = by_id.get(model_id)
+        if model is not None and model.supports_vision:
+            return model
+
+    # Last-resort: any vision-capable model we know about.
+    for model in MODELS:
+        if model.supports_vision:
+            return model
+
+    # Should never happen: the bot ships with Kimi + Qwen as vision models.
+    raise RuntimeError("No vision-capable model configured")

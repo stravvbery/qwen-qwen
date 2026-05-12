@@ -98,7 +98,7 @@ def _resolve_model(model_id: str) -> tuple[str, int | None]:
 
 
 def _is_freetheai(model_id: str) -> bool:
-    return model_id.startswith(("cat/", "fth/", "yng/", "rev/", "glm/", "img/", "vhr/"))
+    return model_id.startswith(("cat/", "fth/", "yng/", "rev/", "glm/", "img/", "vhr/", "bbg/", "bbl/"))
 
 
 def _ensure_json_args(raw: str) -> str:

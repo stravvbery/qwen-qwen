@@ -1,0 +1,19 @@
+FROM python:3.12-slim
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates tini \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY backend/pyproject.toml /app/backend/pyproject.toml
+COPY backend/app /app/backend/app
+RUN pip install --upgrade pip && pip install /app/backend
+
+WORKDIR /app/backend
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["python", "-m", "app.telegram"]

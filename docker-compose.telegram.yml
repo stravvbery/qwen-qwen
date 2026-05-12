@@ -1,0 +1,11 @@
+version: "3.8"
+
+services:
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.telegram
+    container_name: qwen-bot
+    restart: unless-stopped
+    env_file:
+      - .env.telegram

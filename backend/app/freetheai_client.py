@@ -53,6 +53,9 @@ def _auth_headers() -> dict[str, str]:
     }
 
 
+_MAX_RETRIES = 2
+
+
 async def stream_chat(
     *,
     model: str,
@@ -79,6 +82,29 @@ async def stream_chat(
     url = f"{settings.freetheai_base_url.rstrip('/')}/chat/completions"
     timeout = httpx.Timeout(settings.request_timeout_seconds, connect=15.0)
 
+    last_error: FreeTheAIError | None = None
+    for attempt in range(_MAX_RETRIES):
+        if attempt > 0:
+            await asyncio.sleep(2.0)
+
+        try:
+            async for delta in _stream_chat_once(url, payload, timeout):
+                yield delta
+            return  # success
+        except FreeTheAIError as e:
+            last_error = e
+            if "400" not in str(e) and "429" not in str(e):
+                raise  # non-retryable error
+    if last_error:
+        raise last_error
+
+
+async def _stream_chat_once(
+    url: str,
+    payload: dict[str, object],
+    timeout: httpx.Timeout,
+) -> AsyncIterator[StreamDelta]:
+    """Single attempt at streaming chat completion."""
     async with httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream("POST", url, headers=_auth_headers(), json=payload) as resp:
             if resp.status_code >= 400:

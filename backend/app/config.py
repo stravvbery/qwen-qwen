@@ -31,7 +31,7 @@ class Settings(BaseSettings):
 
     static_dir: str = Field(default="./static", alias="STATIC_DIR")
 
-    request_timeout_seconds: float = Field(default=120.0, alias="REQUEST_TIMEOUT_SECONDS")
+    request_timeout_seconds: float = Field(default=180.0, alias="REQUEST_TIMEOUT_SECONDS")
 
     # --- freetheai.xyz provider ---
     freetheai_api_key: str = Field(default="", alias="FREETHEAI_API_KEY")

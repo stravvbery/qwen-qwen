@@ -11,6 +11,8 @@ Handles:
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import logging
 import random
@@ -33,7 +35,13 @@ from ..fireworks import stream_chat as fireworks_stream_chat
 from ..freetheai_client import FreeTheAIError
 from ..freetheai_client import stream_chat as freetheai_stream_chat
 from ..web_tools import TOOL_DEFINITIONS, execute_tool_call, has_any_provider
-from .model_resolver import MODELS, ResolveResult, resolve
+from .model_resolver import (
+    MODELS,
+    ModelEntry,
+    ResolveResult,
+    pick_vision_model,
+    resolve,
+)
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +57,10 @@ _MAX_MSG_LEN = 4096  # Telegram message limit
 # ---------------------------------------------------------------------------
 _conv_store: dict[tuple[int, int], dict[str, Any]] = {}
 _MAX_HISTORY = 20  # max messages in reply chain to keep context bounded
+
+# Guest mode conversation buffer: (chat_id, user_id) → list of messages
+_guest_conv: dict[tuple[int, int], list[dict[str, str]]] = {}
+_GUEST_MAX_HISTORY = 10
 
 
 def _build_reply_chain(chat_id: int, message: types.Message) -> list[dict[str, str]]:
@@ -90,14 +102,35 @@ def _store_message(
             _conv_store.pop(k, None)
 
 
+def _guest_get_history(chat_id: int, user_id: int) -> list[dict[str, str]]:
+    """Return recent conversation history for a guest-mode user."""
+    key = (chat_id, user_id)
+    return list(_guest_conv.get(key, []))
+
+
+def _guest_append(chat_id: int, user_id: int, role: str, content: str) -> None:
+    """Append a message to the guest-mode conversation buffer."""
+    key = (chat_id, user_id)
+    buf = _guest_conv.setdefault(key, [])
+    buf.append({"role": role, "content": content})
+    # Keep bounded
+    if len(buf) > _GUEST_MAX_HISTORY * 2:
+        _guest_conv[key] = buf[-_GUEST_MAX_HISTORY:]
+    # Evict old users if too many
+    if len(_guest_conv) > 2000:
+        keys = list(_guest_conv.keys())
+        for k in keys[:500]:
+            _guest_conv.pop(k, None)
+
+
 _TOOLS_SYSTEM_PROMPT = (
     "You are a helpful AI assistant in a Telegram chat. "
-    "You have access to web_search and read_webpage tools. "
-    "When the user's question requires up-to-date information, "
-    "recent events, real-time data, current prices, weather, news, "
-    "or anything you are unsure about — use the web_search tool. "
-    "Do NOT say you cannot search the internet — you CAN and SHOULD "
-    "use the provided tools. Always prefer searching over declining."
+    "You MUST use the web_search tool for ANY question about current events, "
+    "weather, prices, news, dates, scores, releases, or real-time data. "
+    "You HAVE the web_search and read_webpage tools available RIGHT NOW. "
+    "NEVER say you cannot search — call web_search immediately. "
+    "NEVER apologize about missing tools — they are available. "
+    "If unsure whether info is current — ALWAYS search first, then answer."
 )
 
 
@@ -133,9 +166,14 @@ async def cmd_models(message: types.Message) -> None:
     lines = []
     for m in MODELS:
         aliases = ", ".join(m.aliases[:4])
-        lines.append(f"• **{m.label}** [{m.provider}]\n  _{aliases}_")
+        flags = ""
+        if m.supports_tools:
+            flags += " 🔍"
+        if not m.in_random_pool:
+            flags += " (только по запросу)"
+        lines.append(f"• *{m.label}*{flags}\n  _{aliases}_")
     await message.answer(
-        "🤖 **Доступные модели:**\n\n" + "\n".join(lines),
+        "🤖 *Доступные модели:*\n\n" + "\n".join(lines),
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -146,32 +184,74 @@ async def cmd_models(message: types.Message) -> None:
 
 @router.message()
 async def handle_message(message: types.Message, bot: Bot) -> None:
-    """Process any text message: resolve model, call AI, stream response."""
-    if not message.text:
+    """Process any text/photo message: resolve model, call AI, stream response."""
+    # Accept either a plain text message or a photo (with optional caption).
+    raw_text = message.text or message.caption or ""
+    has_photo = bool(message.photo)
+
+    if not raw_text.strip() and not has_photo:
         return
 
     chat_id = message.chat.id
 
-    # Resolve model from message text
-    result: ResolveResult = resolve(message.text)
-    prompt = result.prompt or message.text  # fallback to full text if prompt is empty
+    # Resolve model from the text/caption. For photo-only messages without a
+    # caption we synthesise a random-model ResolveResult and rely on the
+    # vision override below to swap it for Kimi/Qwen anyway.
+    if raw_text.strip():
+        result: ResolveResult = resolve(raw_text)
+    else:
+        result = ResolveResult(
+            model=random.choice(MODELS), prompt="", was_explicit=False,
+        )
+    prompt = result.prompt or raw_text
 
-    if not prompt.strip():
+    if not has_photo and not prompt.strip():
         await message.answer("Напиши вопрос после названия модели 😊")
         return
 
-    # Store user message (link to the message it replies to, if any)
+    # --- Vision auto-switch ---------------------------------------------
+    # When the user attaches a photo, force a vision-capable model (Kimi
+    # first, then Qwen as fallback). If they already picked Kimi or Qwen
+    # themselves, ``pick_vision_model`` honours that choice.
+    model_entry: ModelEntry = result.model
+    vision_overridden = False
+    image_data_url: str | None = None
+
+    if has_photo:
+        image_data_url = await _download_telegram_photo(bot, message)
+        if image_data_url is None:
+            await message.answer(
+                "❌ Не удалось загрузить изображение из Telegram. "
+                "Попробуй отправить ещё раз или другой файл."
+            )
+            return
+        new_model = pick_vision_model(model_entry)
+        if new_model.id != model_entry.id:
+            vision_overridden = True
+        model_entry = new_model
+
+    # Store user message (link to the message it replies to, if any).
+    # We only persist the textual part — image bytes are intentionally left
+    # out of the history to keep the in-memory store bounded.
     reply_to_id = (
         message.reply_to_message.message_id if message.reply_to_message else None
     )
-    _store_message(chat_id, message.message_id, "user", prompt, reply_to=reply_to_id)
+    stored_prompt = prompt if prompt.strip() else "[Изображение без подписи]"
+    _store_message(chat_id, message.message_id, "user", stored_prompt, reply_to=reply_to_id)
 
     # Build conversation history from reply chain
     history = _build_reply_chain(chat_id, message)
 
     # Send initial status message
-    model_label = result.model.label
-    if result.was_explicit:
+    model_label = model_entry.label
+    if has_photo and vision_overridden:
+        status_text = (
+            f"🖼 Фото получено — переключаю на **{model_label}** (vision).\n"
+            f"🧠 Анализирую..."
+        )
+    elif has_photo:
+        status_text = f"🖼 **{model_label}** анализирует изображение..."
+    elif result.was_explicit:
         status_text = f"🧠 **{model_label}** думает..."
     else:
         status_text = f"🎲 Случайная модель: **{model_label}**\n🧠 Думает..."
@@ -188,9 +268,23 @@ async def handle_message(message: types.Message, bot: Bot) -> None:
             pass
 
     try:
+        # Build the ``content`` payload. For vision requests we use the
+        # OpenAI multimodal form so Fireworks routes both the caption and
+        # the image through the VLM.
+        if image_data_url is not None:
+            effective_prompt = (
+                prompt.strip() if prompt.strip() else "Опиши, что изображено на фото."
+            )
+            user_content: str | list[dict[str, Any]] = [
+                {"type": "text", "text": effective_prompt},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ]
+        else:
+            user_content = prompt
+
         response_text = await _generate_response(
-            model=result.model,
-            prompt=prompt,
+            model=model_entry,
+            prompt=user_content,
             history=history,
             on_progress=_dm_progress,
         )
@@ -330,9 +424,21 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
         )
         return
 
+    chat_id = guest_message.chat.id
+    user_id = guest_message.from_user.id if guest_message.from_user else 0
+    log.info(
+        "Guest message: chat_id=%s user_id=%s text=%r",
+        chat_id, user_id, query_text[:80],
+    )
+
     result = resolve(query_text)
     prompt = result.prompt or query_text
     model_label = result.model.label
+
+    # Store user message and build history
+    _guest_append(chat_id, user_id, "user", prompt)
+    history = _guest_get_history(chat_id, user_id)[:-1]  # exclude current msg
+    log.info("Guest history for (%s, %s): %d messages", chat_id, user_id, len(history))
 
     # --- Step 1: send placeholder and get inline_message_id ---
     if result.was_explicit:
@@ -375,8 +481,12 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
         response_text = await _generate_response(
             model=result.model,
             prompt=prompt,
+            history=history,
             on_progress=_guest_progress,
         )
+
+        # Store bot response for future context
+        _guest_append(chat_id, user_id, "assistant", response_text)
 
         final_text = f"**{model_label}:**\n\n{response_text[:_MAX_MSG_LEN - 100]}"
         await _safe_edit(final_text, bot=bot, inline_message_id=inline_msg_id)
@@ -409,6 +519,47 @@ async def _keep_typing(bot: Bot, chat_id: int) -> None:
             await asyncio.sleep(4)
     except asyncio.CancelledError:
         pass
+
+
+# Max single-photo size we will pull from Telegram. Fireworks accepts ~20 MB
+# base64 payloads, but Telegram's photo delivery rarely exceeds a few MB and
+# keeping this bounded protects us from pathological inputs.
+_MAX_PHOTO_BYTES = 10 * 1024 * 1024
+
+
+async def _download_telegram_photo(bot: Bot, message: types.Message) -> str | None:
+    """Download the best-quality photo on ``message`` and return a data URL.
+
+    Returns ``None`` if the message has no photo or download fails. The
+    returned string is formatted as ``data:image/jpeg;base64,<payload>`` so
+    it can be plugged straight into an OpenAI-style ``image_url`` part.
+    """
+    if not message.photo:
+        return None
+
+    # ``message.photo`` is a list of PhotoSize ordered smallest → largest.
+    # The last entry has the highest resolution available.
+    best = message.photo[-1]
+
+    try:
+        file = await bot.get_file(best.file_id)
+        if not file.file_path:
+            return None
+
+        buffer = io.BytesIO()
+        await bot.download_file(file.file_path, destination=buffer)
+        raw = buffer.getvalue()
+    except Exception:
+        log.exception("Failed to download Telegram photo %s", best.file_id)
+        return None
+
+    if not raw or len(raw) > _MAX_PHOTO_BYTES:
+        return None
+
+    # Telegram re-encodes uploaded photos as JPEG, so the fixed MIME type is
+    # safe regardless of the original source format.
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
 
 
 # Type alias for the progress callback used by _generate_response.
@@ -530,9 +681,8 @@ async def _generate_response(
     ``history`` is an optional list of prior messages (oldest-first) from
     the reply chain, so the model can see conversation context.
     """
-    # FreeTheAI upstream rejects the tools payload for most models,
-    # so only enable tool-calling for providers that support it.
-    can_use_tools = model.provider != "freetheai" and has_any_provider()
+    # Only enable tool-calling for models that support it.
+    can_use_tools = model.supports_tools and has_any_provider()
     tools = TOOL_DEFINITIONS if can_use_tools else None
 
     messages: list[dict[str, Any]] = []
@@ -547,31 +697,80 @@ async def _generate_response(
     else:
         stream_fn = fireworks_stream_chat
 
+    model_id = model.id
+
     # --- First pass: might get tool calls ---
     full_content = ""
     tool_calls_acc: dict[int, ToolCall] = {}
     last_edit_time = 0.0
 
-    async for delta in stream_fn(
-        model=model.id,
-        messages=messages,
-        tools=tools,
-    ):
-        for tc in delta.tool_calls:
-            idx = len(tool_calls_acc)
-            if tc.id:
-                tool_calls_acc[idx] = ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
-            elif tool_calls_acc:
-                last_key = max(tool_calls_acc.keys())
-                tool_calls_acc[last_key].arguments += tc.arguments
+    try:
+        async for delta in stream_fn(
+            model=model_id,
+            messages=messages,
+            tools=tools,
+        ):
+            for tc in delta.tool_calls:
+                idx = len(tool_calls_acc)
+                if tc.id:
+                    tool_calls_acc[idx] = ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
+                elif tool_calls_acc:
+                    last_key = max(tool_calls_acc.keys())
+                    tool_calls_acc[last_key].arguments += tc.arguments
 
-        full_content += delta.content
+            full_content += delta.content
 
-        now = asyncio.get_event_loop().time()
-        if full_content and (now - last_edit_time) > _EDIT_INTERVAL:
-            last_edit_time = now
-            preview = f"🧠 {model.label} генерирует...\n\n{full_content[-500:]}"
-            await on_progress(preview)
+            now = asyncio.get_event_loop().time()
+            if full_content and (now - last_edit_time) > _EDIT_INTERVAL:
+                last_edit_time = now
+                preview = f"🧠 {model.label} генерирует...\n\n{full_content[-500:]}"
+                await on_progress(preview)
+    except (FireworksError, FreeTheAIError):
+        # If the primary model fails and there's a fallback, try it
+        if model.fallback_id:
+            log.info("Primary model %s failed, trying fallback %s", model_id, model.fallback_id)
+            model_id = model.fallback_id
+            full_content = ""
+            tool_calls_acc = {}
+            async for delta in stream_fn(
+                model=model_id,
+                messages=messages,
+                tools=tools,
+            ):
+                for tc in delta.tool_calls:
+                    idx = len(tool_calls_acc)
+                    if tc.id:
+                        tool_calls_acc[idx] = ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
+                    elif tool_calls_acc:
+                        last_key = max(tool_calls_acc.keys())
+                        tool_calls_acc[last_key].arguments += tc.arguments
+
+                full_content += delta.content
+
+                now = asyncio.get_event_loop().time()
+                if full_content and (now - last_edit_time) > _EDIT_INTERVAL:
+                    last_edit_time = now
+                    preview = f"🧠 {model.label} генерирует...\n\n{full_content[-500:]}"
+                    await on_progress(preview)
+        else:
+            raise
+
+    # If first pass returned empty with no tool calls, retry once
+    if not full_content.strip() and not tool_calls_acc:
+        log.warning("Model %s returned empty on first pass, retrying", model_id)
+        async for delta in stream_fn(
+            model=model_id,
+            messages=messages,
+            tools=tools,
+        ):
+            for tc in delta.tool_calls:
+                idx = len(tool_calls_acc)
+                if tc.id:
+                    tool_calls_acc[idx] = ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
+                elif tool_calls_acc:
+                    last_key = max(tool_calls_acc.keys())
+                    tool_calls_acc[last_key].arguments += tc.arguments
+            full_content += delta.content
 
     # --- Handle tool calls (web search) ---
     if tool_calls_acc:
@@ -606,7 +805,7 @@ async def _generate_response(
 
         full_content = ""
         async for delta in stream_fn(
-            model=model.id,
+            model=model_id,
             messages=messages,
             tools=None,
         ):
@@ -618,7 +817,22 @@ async def _generate_response(
                 preview = f"✍️ {model.label} пишет...\n\n{full_content[-500:]}"
                 await on_progress(preview)
 
-    return full_content or "(пустой ответ)"
+        # If second pass returned empty, nudge the model to respond
+        if not full_content.strip():
+            messages.append({
+                "role": "user",
+                "content": "Please summarize the search results and answer the original question.",
+            })
+            async for delta in stream_fn(
+                model=model_id,
+                messages=messages,
+                tools=None,
+            ):
+                full_content += delta.content
+
+    if not full_content.strip():
+        return "Модель не смогла сгенерировать ответ. Попробуй ещё раз или выбери другую модель (/models)."
+    return full_content
 
 
 async def _generate_response_simple(
@@ -633,7 +847,7 @@ async def _generate_response_simple(
     Performs at most one round of tool calls (web_search / read_webpage)
     to keep latency bounded.
     """
-    can_use_tools = model.provider != "freetheai" and has_any_provider()
+    can_use_tools = model.supports_tools and has_any_provider()
     tools = TOOL_DEFINITIONS if can_use_tools else None
 
     messages: list[dict[str, Any]] = []
@@ -666,7 +880,9 @@ async def _generate_response_simple(
         full_content += delta.content
 
     if not tool_calls_acc:
-        return full_content or "(пустой ответ)"
+        if not full_content.strip():
+            return "Модель не смогла сгенерировать ответ. Попробуй ещё раз или выбери другую модель (/models)."
+        return full_content
 
     for tc in tool_calls_acc.values():
         tc.arguments = _ensure_json_arguments(tc.arguments)
@@ -703,7 +919,9 @@ async def _generate_response_simple(
     ):
         full_content += delta.content
 
-    return full_content or "(пустой ответ)"
+    if not full_content.strip():
+        return "Модель не смогла сгенерировать ответ. Попробуй ещё раз или выбери другую модель (/models)."
+    return full_content
 
 
 def _ensure_json_arguments(raw: str) -> str:
