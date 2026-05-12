@@ -11,6 +11,7 @@ Handles:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 from collections.abc import Awaitable, Callable
@@ -430,6 +431,8 @@ async def _generate_response(
     # --- Handle tool calls (web search) ---
     if tool_calls_acc:
         for _idx, tc in tool_calls_acc.items():
+            tc.arguments = _ensure_json_arguments(tc.arguments)
+
             await on_progress(
                 f"🔍 {model.label} ищет в интернете...\n\n"
                 f"{tc.name}({tc.arguments[:100]})"
@@ -518,6 +521,9 @@ async def _generate_response_simple(
     if not tool_calls_acc:
         return full_content or "(пустой ответ)"
 
+    for tc in tool_calls_acc.values():
+        tc.arguments = _ensure_json_arguments(tc.arguments)
+
     messages.append(
         {
             "role": "assistant",
@@ -551,6 +557,24 @@ async def _generate_response_simple(
         full_content += delta.content
 
     return full_content or "(пустой ответ)"
+
+
+def _ensure_json_arguments(raw: str) -> str:
+    """Ensure tool-call arguments are a valid JSON object string.
+
+    Some models produce empty strings, bare values, or malformed JSON.
+    Fireworks requires a JSON object string for ``function.arguments``.
+    """
+    raw = raw.strip()
+    if not raw:
+        return "{}"
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return raw
+        return json.dumps({"query": str(parsed)})
+    except (json.JSONDecodeError, ValueError):
+        return json.dumps({"query": raw})
 
 
 def _split_text(text: str, max_len: int) -> list[str]:

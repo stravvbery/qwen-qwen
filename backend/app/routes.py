@@ -101,6 +101,20 @@ def _is_freetheai(model_id: str) -> bool:
     return model_id.startswith(("cat/", "fth/", "yng/", "rev/", "glm/", "img/", "vhr/"))
 
 
+def _ensure_json_args(raw: str) -> str:
+    """Ensure tool-call arguments are a valid JSON object string."""
+    raw = raw.strip()
+    if not raw:
+        return "{}"
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return raw
+        return json.dumps({"query": str(parsed)})
+    except (json.JSONDecodeError, ValueError):
+        return json.dumps({"query": raw})
+
+
 
 
 def _ensure_model(model_id: str) -> None:
@@ -453,6 +467,9 @@ async def post_message(
 
                 if not pending_tool_calls:
                     break
+
+                for tc in pending_tool_calls.values():
+                    tc.arguments = _ensure_json_args(tc.arguments)
 
                 assistant_tc_msg: dict[str, object] = {
                     "role": "assistant",
