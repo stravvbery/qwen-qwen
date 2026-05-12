@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -41,6 +42,63 @@ router = Router()
 # How often to edit the message during streaming (avoid Telegram rate limits)
 _EDIT_INTERVAL = 1.5  # seconds
 _MAX_MSG_LEN = 4096  # Telegram message limit
+
+# ---------------------------------------------------------------------------
+# In-memory conversation store for reply-chain context
+# Maps (chat_id, message_id) → {"role": ..., "content": ..., "reply_to": ...}
+# ---------------------------------------------------------------------------
+_conv_store: dict[tuple[int, int], dict[str, Any]] = {}
+_MAX_HISTORY = 20  # max messages in reply chain to keep context bounded
+
+
+def _build_reply_chain(chat_id: int, message: types.Message) -> list[dict[str, str]]:
+    """Walk the reply chain and return conversation history oldest-first."""
+    chain: list[dict[str, str]] = []
+
+    # Walk backwards through reply_to pointers in our store
+    reply_msg = message.reply_to_message
+    if reply_msg:
+        reply_msg_id = reply_msg.message_id
+        visited: set[int] = set()
+        while reply_msg_id and reply_msg_id not in visited:
+            visited.add(reply_msg_id)
+            entry = _conv_store.get((chat_id, reply_msg_id))
+            if not entry:
+                break
+            chain.append({"role": entry["role"], "content": entry["content"]})
+            reply_msg_id = entry.get("reply_to")
+        chain.reverse()
+
+    # Keep only the last N messages to avoid token overflow
+    return chain[-_MAX_HISTORY:]
+
+
+def _store_message(
+    chat_id: int, message_id: int, role: str, content: str,
+    reply_to: int | None = None,
+) -> None:
+    """Store a message in the conversation store."""
+    _conv_store[(chat_id, message_id)] = {
+        "role": role,
+        "content": content,
+        "reply_to": reply_to,
+    }
+    # Evict old entries if store grows too large (simple LRU-ish)
+    if len(_conv_store) > 5000:
+        keys = list(_conv_store.keys())
+        for k in keys[:1000]:
+            _conv_store.pop(k, None)
+
+
+_TOOLS_SYSTEM_PROMPT = (
+    "You are a helpful AI assistant in a Telegram chat. "
+    "You have access to web_search and read_webpage tools. "
+    "When the user's question requires up-to-date information, "
+    "recent events, real-time data, current prices, weather, news, "
+    "or anything you are unsure about — use the web_search tool. "
+    "Do NOT say you cannot search the internet — you CAN and SHOULD "
+    "use the provided tools. Always prefer searching over declining."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +150,8 @@ async def handle_message(message: types.Message, bot: Bot) -> None:
     if not message.text:
         return
 
+    chat_id = message.chat.id
+
     # Resolve model from message text
     result: ResolveResult = resolve(message.text)
     prompt = result.prompt or message.text  # fallback to full text if prompt is empty
@@ -99,6 +159,15 @@ async def handle_message(message: types.Message, bot: Bot) -> None:
     if not prompt.strip():
         await message.answer("Напиши вопрос после названия модели 😊")
         return
+
+    # Store user message (link to the message it replies to, if any)
+    reply_to_id = (
+        message.reply_to_message.message_id if message.reply_to_message else None
+    )
+    _store_message(chat_id, message.message_id, "user", prompt, reply_to=reply_to_id)
+
+    # Build conversation history from reply chain
+    history = _build_reply_chain(chat_id, message)
 
     # Send initial status message
     model_label = result.model.label
@@ -110,7 +179,7 @@ async def handle_message(message: types.Message, bot: Bot) -> None:
     status_msg = await message.answer(status_text, parse_mode=ParseMode.MARKDOWN)
 
     # Start typing indicator
-    typing_task = asyncio.create_task(_keep_typing(bot, message.chat.id))
+    typing_task = asyncio.create_task(_keep_typing(bot, chat_id))
 
     async def _dm_progress(text: str) -> None:
         try:
@@ -122,7 +191,14 @@ async def handle_message(message: types.Message, bot: Bot) -> None:
         response_text = await _generate_response(
             model=result.model,
             prompt=prompt,
+            history=history,
             on_progress=_dm_progress,
+        )
+
+        # Store bot response (linked to the status message id)
+        _store_message(
+            chat_id, status_msg.message_id, "assistant", response_text,
+            reply_to=message.message_id,
         )
 
         # Final edit with complete response
@@ -343,6 +419,62 @@ async def _noop_progress(_text: str) -> None:
     pass
 
 
+def _sanitize_tg_markdown(text: str) -> str:
+    """Convert standard AI markdown to Telegram-compatible Markdown V1.
+
+    Telegram Markdown V1 rules:
+      *bold*  _italic_  `code`  ```pre```  [text](url)
+    AI models produce **bold**, ### headers, > quotes, etc. which break
+    Telegram's parser.
+    """
+    # --- code blocks: protect from further transforms ---
+    code_blocks: list[str] = []
+
+    def _stash_code_block(m: re.Match[str]) -> str:
+        code_blocks.append(m.group(0))
+        return f"\x00CB{len(code_blocks) - 1}\x00"
+
+    text = re.sub(r"```[\s\S]*?```", _stash_code_block, text)
+
+    inline_codes: list[str] = []
+
+    def _stash_inline_code(m: re.Match[str]) -> str:
+        inline_codes.append(m.group(0))
+        return f"\x00IC{len(inline_codes) - 1}\x00"
+
+    text = re.sub(r"`[^`]+`", _stash_inline_code, text)
+
+    # --- headers → bold ---
+    text = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", text, flags=re.MULTILINE)
+
+    # --- **bold** or __bold__ → *bold* ---
+    text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
+    text = re.sub(r"__(.+?)__", r"_\1_", text)
+
+    # --- blockquotes → plain text ---
+    text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
+
+    # --- horizontal rules ---
+    text = re.sub(r"^[-*_]{3,}\s*$", "", text, flags=re.MULTILINE)
+
+    # --- balance unclosed markers ---
+    for marker in ("*", "_"):
+        # Count unescaped occurrences outside code spans
+        count = text.count(marker)
+        if count % 2 != 0:
+            # Remove the last lone marker to avoid parse error
+            idx = text.rfind(marker)
+            text = text[:idx] + text[idx + 1:]
+
+    # --- restore code ---
+    for i, block in enumerate(code_blocks):
+        text = text.replace(f"\x00CB{i}\x00", block)
+    for i, code in enumerate(inline_codes):
+        text = text.replace(f"\x00IC{i}\x00", code)
+
+    return text
+
+
 async def _safe_edit(
     text: str,
     *,
@@ -351,7 +483,9 @@ async def _safe_edit(
     inline_message_id: str | None = None,
     parse_mode: str | None = ParseMode.MARKDOWN,
 ) -> None:
-    """Edit a message with automatic Markdown → plain-text fallback."""
+    """Edit a message with sanitization and Markdown → plain-text fallback."""
+    if parse_mode == ParseMode.MARKDOWN:
+        text = _sanitize_tg_markdown(text)
     for pm in (parse_mode, None) if parse_mode else (None,):
         try:
             if inline_message_id and bot:
@@ -370,9 +504,10 @@ async def _safe_edit(
 
 
 async def _safe_send(message: types.Message, text: str) -> types.Message:
-    """Send a message with automatic Markdown → plain-text fallback."""
+    """Send a message with sanitization and Markdown → plain-text fallback."""
+    sanitized = _sanitize_tg_markdown(text)
     try:
-        return await message.answer(text[:_MAX_MSG_LEN], parse_mode=ParseMode.MARKDOWN)
+        return await message.answer(sanitized[:_MAX_MSG_LEN], parse_mode=ParseMode.MARKDOWN)
     except TelegramBadRequest as exc:
         if "can't parse entities" in str(exc).lower():
             return await message.answer(text[:_MAX_MSG_LEN])
@@ -383,6 +518,7 @@ async def _generate_response(
     *,
     model: Any,
     prompt: str,
+    history: list[dict[str, str]] | None = None,
     on_progress: _ProgressFn = _noop_progress,
 ) -> str:
     """Generate AI response with streaming progress callbacks and tool calling.
@@ -390,12 +526,21 @@ async def _generate_response(
     ``on_progress`` is invoked periodically with a status/preview string.
     The caller decides *how* to render it (edit a chat message, edit an
     inline message, etc.).
-    """
-    messages: list[dict[str, Any]] = [
-        {"role": "user", "content": prompt},
-    ]
 
-    tools = TOOL_DEFINITIONS if has_any_provider() else None
+    ``history`` is an optional list of prior messages (oldest-first) from
+    the reply chain, so the model can see conversation context.
+    """
+    # FreeTheAI upstream rejects the tools payload for most models,
+    # so only enable tool-calling for providers that support it.
+    can_use_tools = model.provider != "freetheai" and has_any_provider()
+    tools = TOOL_DEFINITIONS if can_use_tools else None
+
+    messages: list[dict[str, Any]] = []
+    if tools:
+        messages.append({"role": "system", "content": _TOOLS_SYSTEM_PROMPT})
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
 
     if model.provider == "freetheai":
         stream_fn = freetheai_stream_chat
@@ -483,21 +628,23 @@ async def _generate_response_simple(
 ) -> str:
     """Non-streaming AI response with optional web search.
 
-    Used for inline queries and Bot API 10.0 guest mode where we have to
-    return a single ``InlineQueryResult`` synchronously instead of streaming
-    edits. Performs at most one round of tool calls (web_search / read_webpage)
+    Used for inline queries where we have to return a single
+    ``InlineQueryResult`` synchronously instead of streaming edits.
+    Performs at most one round of tool calls (web_search / read_webpage)
     to keep latency bounded.
     """
-    messages: list[dict[str, Any]] = [
-        {"role": "user", "content": prompt},
-    ]
+    can_use_tools = model.provider != "freetheai" and has_any_provider()
+    tools = TOOL_DEFINITIONS if can_use_tools else None
+
+    messages: list[dict[str, Any]] = []
+    if tools:
+        messages.append({"role": "system", "content": _TOOLS_SYSTEM_PROMPT})
+    messages.append({"role": "user", "content": prompt})
 
     if model.provider == "freetheai":
         stream_fn = freetheai_stream_chat
     else:
         stream_fn = fireworks_stream_chat
-
-    tools = TOOL_DEFINITIONS if has_any_provider() else None
 
     full_content = ""
     tool_calls_acc: dict[int, ToolCall] = {}

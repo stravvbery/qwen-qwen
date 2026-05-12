@@ -1,7 +1,7 @@
 """Smart model resolution from user text.
 
-Parses the first word(s) of a message to detect which AI model the user wants.
-Supports Russian/English aliases, typos, and variations.
+Scans the entire message for a known model alias (any position, not just
+the start).  Supports Russian/English aliases, typos, and variations.
 If no model keyword is found — picks a random model.
 """
 
@@ -106,34 +106,36 @@ class ResolveResult:
 
 
 def resolve(text: str) -> ResolveResult:
-    """Parse user text: detect model keyword at the start, return model + cleaned prompt."""
+    """Detect a model alias anywhere in the text, return model + cleaned prompt.
+
+    Scans every word (and consecutive two-word pair) for a known alias.
+    The matched keyword is stripped from the prompt so the AI only sees the
+    actual question.  If no alias is found — picks a random model.
+    """
     stripped = text.strip()
     if not stripped:
         model = random.choice(MODELS)
         return ResolveResult(model=model, prompt="", was_explicit=False)
 
-    # Try to match first 1-2 words as a model alias
-    # Split on whitespace, take up to 2 tokens from the start
-    words = stripped.split(None, 2)
+    words = stripped.split()
+    norm_words = [re.sub(r"[-.]", "", w.lower()) for w in words]
 
-    # Try two-word match first (e.g. "deep seek ...")
-    if len(words) >= 2:
-        two_word = f"{words[0]} {words[1]}".lower()
-        # Normalize: remove hyphens, dots
-        two_norm = re.sub(r"[-.]", "", two_word)
+    # Try two-word match at every position first (longer match wins)
+    for i in range(len(norm_words) - 1):
+        two_norm = f"{norm_words[i]} {norm_words[i + 1]}"
         if two_norm in _ALIAS_MAP:
             model = _ALIAS_MAP[two_norm]
-            prompt = words[2] if len(words) > 2 else ""
+            remaining = words[:i] + words[i + 2:]
+            prompt = " ".join(remaining).strip()
             return ResolveResult(model=model, prompt=prompt, was_explicit=True)
 
-    # Try single-word match
-    first = words[0].lower()
-    first_norm = re.sub(r"[-.]", "", first)
-
-    if first_norm in _ALIAS_MAP:
-        model = _ALIAS_MAP[first_norm]
-        rest = stripped[len(words[0]):].strip()
-        return ResolveResult(model=model, prompt=rest, was_explicit=True)
+    # Try single-word match at every position
+    for i, nw in enumerate(norm_words):
+        if nw in _ALIAS_MAP:
+            model = _ALIAS_MAP[nw]
+            remaining = words[:i] + words[i + 1:]
+            prompt = " ".join(remaining).strip()
+            return ResolveResult(model=model, prompt=prompt, was_explicit=True)
 
     # No match — random model, full text is the prompt
     model = random.choice(MODELS)
