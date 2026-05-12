@@ -117,12 +117,12 @@ def _guest_append(chat_id: int, user_id: int, role: str, content: str) -> None:
 
 _TOOLS_SYSTEM_PROMPT = (
     "You are a helpful AI assistant in a Telegram chat. "
-    "You have access to web_search and read_webpage tools. "
-    "When the user's question requires up-to-date information, "
-    "recent events, real-time data, current prices, weather, news, "
-    "or anything you are unsure about — use the web_search tool. "
-    "Do NOT say you cannot search the internet — you CAN and SHOULD "
-    "use the provided tools. Always prefer searching over declining."
+    "You MUST use the web_search tool for ANY question about current events, "
+    "weather, prices, news, dates, scores, releases, or real-time data. "
+    "You HAVE the web_search and read_webpage tools available RIGHT NOW. "
+    "NEVER say you cannot search — call web_search immediately. "
+    "NEVER apologize about missing tools — they are available. "
+    "If unsure whether info is current — ALWAYS search first, then answer."
 )
 
 
@@ -644,6 +644,23 @@ async def _generate_response(
                     await on_progress(preview)
         else:
             raise
+
+    # If first pass returned empty with no tool calls, retry once
+    if not full_content.strip() and not tool_calls_acc:
+        log.warning("Model %s returned empty on first pass, retrying", model_id)
+        async for delta in stream_fn(
+            model=model_id,
+            messages=messages,
+            tools=tools,
+        ):
+            for tc in delta.tool_calls:
+                idx = len(tool_calls_acc)
+                if tc.id:
+                    tool_calls_acc[idx] = ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
+                elif tool_calls_acc:
+                    last_key = max(tool_calls_acc.keys())
+                    tool_calls_acc[last_key].arguments += tc.arguments
+            full_content += delta.content
 
     # --- Handle tool calls (web search) ---
     if tool_calls_acc:
