@@ -595,15 +595,76 @@ async def handle_inline_query(inline_query: InlineQuery) -> None:
 # the same model-resolution + web-search pipeline as DM, but non-streaming.
 # ---------------------------------------------------------------------------
 
+def _guest_is_addressed(
+    guest_message: types.Message,
+    bot_username_lower: str | None,
+    bot_id: int,
+) -> bool:
+    """Return True iff the guest message explicitly addresses the bot.
+
+    In Bot API 10.0 guest mode (May 2026), Telegram can route *every*
+    message from an open guest session to the bot — not just the ones
+    that literally contain ``@botusername``. The bot therefore has to
+    filter itself, the same way it does in group chats.
+
+    We accept any of:
+
+    * an ``entities`` / ``caption_entities`` mention entity matching
+      ``@botusername``,
+    * a ``text_mention`` entity whose ``user.id`` equals the bot id,
+    * or a case-insensitive substring match of ``@botusername`` in the
+      text / caption (fallback for entity-less guest updates, which
+      some Telegram clients send).
+
+    A bare reply to one of the bot's own messages is deliberately NOT
+    enough — the user must @-mention the bot to re-engage it, matching
+    the strict behaviour the user asked for in the group-chat case.
+    """
+    text = (guest_message.text or guest_message.caption or "")
+    entities = (
+        guest_message.entities or guest_message.caption_entities or []
+    )
+    for ent in entities:
+        if ent.type == "mention" and bot_username_lower:
+            mention_text = text[ent.offset : ent.offset + ent.length].lower()
+            if mention_text == f"@{bot_username_lower}":
+                return True
+        elif ent.type == "text_mention" and ent.user is not None:
+            if ent.user.id == bot_id:
+                return True
+
+    if bot_username_lower:
+        # Case-insensitive substring fallback — some guest updates
+        # arrive without entity metadata even though the user typed
+        # the handle.
+        if f"@{bot_username_lower}" in text.lower():
+            return True
+
+    return False
+
+
 @router.guest_message()
 async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
     """Reply to a guest-mode query with streaming progress updates.
 
-    Flow:
-    1. Send immediate placeholder via ``answerGuestQuery``.
-    2. Get back ``SentGuestMessage.inline_message_id``.
-    3. Stream AI response, periodically editing the inline message.
-    4. Final edit with the complete answer (markdown with plain-text fallback).
+    Policy (matches the strict group-chat policy): we only engage when
+    the message explicitly @-mentions the bot. Every other guest message
+    is silently recorded in ``_guest_conv`` so the context is still
+    there when the user does ping the bot later. Telegram still requires
+    us to answer the ``guest_query_id`` exactly once, so for the silent
+    branch we return an empty ``InlineQueryResultsButton``-style article
+    that the user would have to actively choose — which they won't, so
+    nothing appears in the chat.
+
+    Happy path:
+
+    1. Verify the message addresses the bot (``@botusername`` mention
+       entity, ``text_mention`` targeting the bot, or a case-insensitive
+       ``@botusername`` substring).
+    2. Send an immediate placeholder via ``answerGuestQuery`` and pick
+       up ``SentGuestMessage.inline_message_id``.
+    3. Stream the AI response by periodically editing the inline message.
+    4. Commit the final answer (markdown with plain-text fallback).
     """
     guest_query_id = guest_message.guest_query_id
     if not guest_query_id:
@@ -611,7 +672,57 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
         return
 
     query_text = (guest_message.text or "").strip()
+
+    chat_id = guest_message.chat.id
+    user_id = guest_message.from_user.id if guest_message.from_user else 0
+    bot_id, bot_username_lower = await _get_bot_identity(bot)
+
+    # --- Mention gate for guest mode ---
+    # Unless the message explicitly @-mentions the bot, we stay silent
+    # but still cache the text so that when the user does ping the bot
+    # later in the same guest session, ``_guest_get_history`` serves the
+    # intervening messages as conversation context.
+    addressed = _guest_is_addressed(guest_message, bot_username_lower, bot_id)
+
+    if not addressed:
+        if query_text:
+            _guest_append(chat_id, user_id, "user", query_text)
+        log.info(
+            "Guest message not addressed to bot — silent cache only "
+            "(chat_id=%s user_id=%s text=%r)",
+            chat_id, user_id, query_text[:80],
+        )
+        try:
+            # Telegram expects exactly one answer per guest_query_id. We
+            # hand back a neutral hint that the user has to actively
+            # send from the guest UI to appear in the chat — in practice
+            # they won't, and no message is posted. This keeps the guest
+            # session healthy without us speaking up uninvited.
+            await guest_message.answer_guest_query(
+                result=InlineQueryResultArticle(
+                    id=f"guest_silent_{random.randint(1, 999_999_999)}",
+                    title="🤫 Молчу",
+                    description=(
+                        f"Упомяни @{bot_username_lower or 'меня'}, "
+                        "чтобы я ответил."
+                    ),
+                    input_message_content=InputTextMessageContent(
+                        message_text=(
+                            f"Упомяни @{bot_username_lower or 'меня'}, "
+                            "чтобы я включился в диалог."
+                        ),
+                    ),
+                ),
+            )
+        except Exception:
+            # A failing answerGuestQuery is harmless for us — Telegram
+            # will time the query out on its own. We just don't want
+            # unhandled exceptions in the dispatcher.
+            log.debug("silent answerGuestQuery failed", exc_info=True)
+        return
+
     if not query_text:
+        # Mentioned the bot but sent no text (e.g. "@bot " alone).
         await guest_message.answer_guest_query(
             result=InlineQueryResultArticle(
                 id=f"guest_empty_{random.randint(1, 999_999)}",
@@ -627,15 +738,18 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
         )
         return
 
-    chat_id = guest_message.chat.id
-    user_id = guest_message.from_user.id if guest_message.from_user else 0
     log.info(
         "Guest message: chat_id=%s user_id=%s text=%r",
         chat_id, user_id, query_text[:80],
     )
 
-    result = resolve(query_text)
-    prompt = result.prompt or query_text
+    # Strip the bot handle out of the prompt before resolving the
+    # model — same as in ``handle_message`` so the LLM doesn't waste
+    # tokens echoing its own name.
+    prompt_source = _strip_bot_mention(query_text, bot_username_lower)
+
+    result = resolve(prompt_source)
+    prompt = result.prompt or prompt_source
     model_label = result.model.label
 
     # Store user message and build history
