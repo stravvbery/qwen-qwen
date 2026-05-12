@@ -690,6 +690,19 @@ async def _generate_response(
                 preview = f"✍️ {model.label} пишет...\n\n{full_content[-500:]}"
                 await on_progress(preview)
 
+        # If second pass returned empty, nudge the model to respond
+        if not full_content.strip():
+            messages.append({
+                "role": "user",
+                "content": "Please summarize the search results and answer the original question.",
+            })
+            async for delta in stream_fn(
+                model=model_id,
+                messages=messages,
+                tools=None,
+            ):
+                full_content += delta.content
+
     return full_content or "(пустой ответ)"
 
 
