@@ -401,7 +401,10 @@ async def _generate_response(
     The caller decides *how* to render it (edit a chat message, edit an
     inline message, etc.).
     """
-    tools = TOOL_DEFINITIONS if has_any_provider() else None
+    # FreeTheAI upstream rejects the tools payload for most models,
+    # so only enable tool-calling for providers that support it.
+    can_use_tools = model.provider != "freetheai" and has_any_provider()
+    tools = TOOL_DEFINITIONS if can_use_tools else None
 
     messages: list[dict[str, Any]] = []
     if tools:
@@ -499,7 +502,8 @@ async def _generate_response_simple(
     Performs at most one round of tool calls (web_search / read_webpage)
     to keep latency bounded.
     """
-    tools = TOOL_DEFINITIONS if has_any_provider() else None
+    can_use_tools = model.provider != "freetheai" and has_any_provider()
+    tools = TOOL_DEFINITIONS if can_use_tools else None
 
     messages: list[dict[str, Any]] = []
     if tools:
