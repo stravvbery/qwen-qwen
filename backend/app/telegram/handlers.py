@@ -3,6 +3,8 @@
 Handles:
 - Direct messages in PM (any text → AI response)
 - Inline queries (@bot query in any chat)
+- Guest mode (Bot API 10.0+): receive ``guest_message`` updates from chats
+  the bot is not a member of and reply via ``answerGuestQuery``.
 - Status indicators (typing, searching, etc.)
 """
 
@@ -22,7 +24,7 @@ from aiogram.types import (
     InputTextMessageContent,
 )
 
-from ..fireworks import FireworksError, StreamDelta, ToolCall
+from ..fireworks import FireworksError, ToolCall
 from ..fireworks import stream_chat as fireworks_stream_chat
 from ..freetheai_client import FreeTheAIError
 from ..freetheai_client import stream_chat as freetheai_stream_chat
@@ -207,6 +209,90 @@ async def handle_inline_query(inline_query: InlineQuery) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Guest mode handler — Bot API 10.0+ (May 8, 2026)
+#
+# When a Telegram user invokes this bot from a chat where the bot is NOT
+# a member ("Guest AI Bots" feature), the Bot API delivers the request as
+# ``Update.guest_message`` with a populated ``guest_query_id``. The bot has
+# to reply once via ``answerGuestQuery`` with an InlineQueryResult — we use
+# the same model-resolution + web-search pipeline as DM, but non-streaming.
+# ---------------------------------------------------------------------------
+
+@router.guest_message()
+async def handle_guest_message(guest_message: types.Message) -> None:
+    """Reply to a guest-mode query coming from a chat the bot is not in."""
+    guest_query_id = guest_message.guest_query_id
+    if not guest_query_id:
+        log.warning("guest_message update without guest_query_id; skipping")
+        return
+
+    query_text = (guest_message.text or "").strip()
+    if not query_text:
+        await guest_message.answer_guest_query(
+            result=InlineQueryResultArticle(
+                id=f"guest_empty_{random.randint(1, 999_999)}",
+                title="Напиши вопрос боту",
+                description="Пример: «клод что нового в Python 3.13?»",
+                input_message_content=InputTextMessageContent(
+                    message_text=(
+                        "Привет! Чтобы получить ответ — добавь текст после "
+                        "упоминания бота, например: «что такое нейросеть?»."
+                    ),
+                ),
+            ),
+        )
+        return
+
+    result = resolve(query_text)
+    prompt = result.prompt or query_text
+    model_label = result.model.label
+
+    try:
+        response_text = await _generate_response_simple(
+            model=result.model,
+            prompt=prompt,
+        )
+        short = (
+            response_text[:200] + "..."
+            if len(response_text) > 200
+            else response_text
+        )
+        message_text = f"**{model_label}:**\n\n{response_text[: _MAX_MSG_LEN - 100]}"
+        article = InlineQueryResultArticle(
+            id=f"guest_{random.randint(1, 999_999_999)}",
+            title=f"🤖 {model_label}",
+            description=short,
+            input_message_content=InputTextMessageContent(
+                message_text=message_text,
+                parse_mode=ParseMode.MARKDOWN,
+            ),
+        )
+    except (FireworksError, FreeTheAIError, GeminiError) as e:
+        article = InlineQueryResultArticle(
+            id=f"guest_err_{random.randint(1, 999_999)}",
+            title=f"❌ Ошибка от {model_label}",
+            description=str(e)[:100],
+            input_message_content=InputTextMessageContent(
+                message_text=f"❌ Ошибка от **{model_label}**: `{str(e)[:300]}`",
+                parse_mode=ParseMode.MARKDOWN,
+            ),
+        )
+    except Exception as e:
+        log.exception("Unexpected error in handle_guest_message")
+        article = InlineQueryResultArticle(
+            id=f"guest_err_{random.randint(1, 999_999)}",
+            title="❌ Ошибка",
+            description=str(e)[:100],
+            input_message_content=InputTextMessageContent(
+                message_text=f"❌ Непредвиденная ошибка: `{str(e)[:300]}`",
+                parse_mode=ParseMode.MARKDOWN,
+            ),
+        )
+
+    await guest_message.answer_guest_query(result=article)
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
@@ -348,7 +434,13 @@ async def _generate_response_simple(
     model: Any,
     prompt: str,
 ) -> str:
-    """Simple non-streaming generation for inline queries."""
+    """Non-streaming AI response with optional web search.
+
+    Used for inline queries and Bot API 10.0 guest mode where we have to
+    return a single ``InlineQueryResult`` synchronously instead of streaming
+    edits. Performs at most one round of tool calls (web_search / read_webpage)
+    to keep latency bounded.
+    """
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": prompt},
     ]
@@ -359,6 +451,54 @@ async def _generate_response_simple(
         stream_fn = gemini_stream_chat
     else:
         stream_fn = fireworks_stream_chat
+
+    tools = TOOL_DEFINITIONS if has_any_provider() else None
+
+    full_content = ""
+    tool_calls_acc: dict[int, ToolCall] = {}
+
+    async for delta in stream_fn(
+        model=model.id,
+        messages=messages,
+        tools=tools,
+    ):
+        for tc in delta.tool_calls:
+            idx = len(tool_calls_acc)
+            if tc.id:
+                tool_calls_acc[idx] = ToolCall(
+                    id=tc.id, name=tc.name, arguments=tc.arguments
+                )
+            elif tool_calls_acc:
+                last_key = max(tool_calls_acc.keys())
+                tool_calls_acc[last_key].arguments += tc.arguments
+        full_content += delta.content
+
+    if not tool_calls_acc:
+        return full_content or "(пустой ответ)"
+
+    messages.append(
+        {
+            "role": "assistant",
+            "content": full_content or None,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": tc.arguments},
+                }
+                for tc in tool_calls_acc.values()
+            ],
+        }
+    )
+    for tc in tool_calls_acc.values():
+        tool_result = await execute_tool_call(tc.name, tc.arguments)
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": tool_result[:8000],
+            }
+        )
 
     full_content = ""
     async for delta in stream_fn(
