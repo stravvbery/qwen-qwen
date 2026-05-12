@@ -167,14 +167,23 @@ def _is_bot_mentioned(
 ) -> bool:
     """Return True if this message explicitly addresses the bot.
 
-    The bot is considered addressed when any of the following hold:
+    The bot is considered addressed **only** when the user explicitly
+    mentions it in the message text/caption — either:
 
-    * The user replied to one of the bot's own messages.
-    * The text contains a ``@botusername`` mention (handled via message
-      entities so we don't misfire on ``@someone_else``).
+    * The text contains a ``@botusername`` mention entity (authoritative,
+      so we don't misfire on ``@someone_else``).
     * The text contains a ``text_mention`` entity pointing at the bot's
       user id (the Telegram client uses this when linking a mention to
       a user without a public @username).
+
+    Note: a bare reply to one of the bot's own messages **does not**
+    count as addressing the bot. The user must also type ``@botname``
+    (or text-mention the bot) in the reply for us to engage. This keeps
+    casual reactions like ``боребень`` in reply to the bot from
+    triggering another response. However, when the user *does* reply
+    with an ``@botname`` mention, ``_build_reply_chain`` still walks the
+    full reply chain so earlier unaddressed messages in the thread are
+    included in the model's context.
 
     In private chats this helper is not consulted — direct messages are
     always treated as addressed to the bot.
@@ -193,11 +202,6 @@ def _is_bot_mentioned(
             # @username (e.g. scoped bots).
             if ent.user.id == bot_id:
                 return True
-
-    # Reply to one of the bot's own messages.
-    reply = message.reply_to_message
-    if reply and reply.from_user and reply.from_user.id == bot_id:
-        return True
 
     return False
 
@@ -268,10 +272,17 @@ async def cmd_models(message: types.Message) -> None:
 async def handle_message(message: types.Message, bot: Bot) -> None:
     """Process any text/photo message: resolve model, call AI, stream response.
 
-    Group-chat policy (fix #4): the bot replies in a group only when the
-    message explicitly addresses it — either via ``@botusername`` mention,
-    a ``text_mention`` entity pointing at the bot, or a reply to one of
-    the bot's own messages. Unaddressed group chatter is silently ignored.
+    Group-chat policy (fix #4, revised): the bot replies in a group
+    **only** when the message contains an explicit ``@botusername`` or
+    text-mention of the bot. A bare reply to the bot's own message is
+    *not* enough — the user must also @-mention the bot.
+
+    Messages in groups that don't address the bot are still recorded in
+    the in-memory reply-chain store (without sending anything), so that
+    if the user later replies with ``@botname <question>`` higher up the
+    thread, the full chain (including intermediate unaddressed messages
+    like ``боребень``) is passed to the model as context.
+
     Private chats always get a response, as before.
     """
     # Accept either a plain text message or a photo (with optional caption).
@@ -288,9 +299,31 @@ async def handle_message(message: types.Message, bot: Bot) -> None:
 
     # --- Mention gate for non-private chats ---
     # In groups and supergroups we stay silent unless the user addressed us
-    # directly. This keeps the bot polite in shared rooms.
+    # directly via ``@botusername`` or a text-mention entity. Bare replies
+    # to the bot's own messages are ignored — the user has to actually
+    # @-mention the bot in the reply for us to respond.
     if not is_private:
-        if not _is_bot_mentioned(message, bot_id, bot_username_lower):
+        addressed = _is_bot_mentioned(message, bot_id, bot_username_lower)
+        if not addressed:
+            # Silent-save branch: even though we won't reply, persist this
+            # message in the conversation store so that if the user later
+            # @-mentions the bot in a reply down the thread, the whole
+            # chain (including the unaddressed messages like ``боребень``)
+            # is available to the model via ``_build_reply_chain``.
+            text_for_store = (message.text or message.caption or "").strip()
+            if text_for_store:
+                _passive_reply_to = (
+                    message.reply_to_message.message_id
+                    if message.reply_to_message
+                    else None
+                )
+                _store_message(
+                    message.chat.id,
+                    message.message_id,
+                    "user",
+                    text_for_store,
+                    reply_to=_passive_reply_to,
+                )
             return
         # Drop the leading ``@botusername`` from the prompt so the model
         # doesn't waste tokens repeating its own name.
