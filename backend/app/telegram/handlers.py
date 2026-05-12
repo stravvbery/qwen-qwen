@@ -671,7 +671,12 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
         log.warning("guest_message update without guest_query_id; skipping")
         return
 
-    query_text = (guest_message.text or "").strip()
+    # When a user sends a photo, Telegram puts the typed text into
+    # ``.caption`` (not ``.text``). Accept either so a plain photo with
+    # a caption like ''@bot что на фотке'' is recognised the same way
+    # as the same text without an attachment.
+    query_text = (guest_message.text or guest_message.caption or "").strip()
+    has_photo = bool(guest_message.photo)
 
     chat_id = guest_message.chat.id
     user_id = guest_message.from_user.id if guest_message.from_user else 0
@@ -725,8 +730,8 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
             log.debug("silent answerGuestQuery failed", exc_info=True)
         return
 
-    if not query_text:
-        # Mentioned the bot but sent no text (e.g. "@bot " alone).
+    if not query_text and not has_photo:
+        # Mentioned the bot but sent no text and no photo (e.g. "@bot " alone).
         await guest_message.answer_guest_query(
             result=InlineQueryResultArticle(
                 id=f"guest_empty_{random.randint(1, 999_999)}",
@@ -743,8 +748,8 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
         return
 
     log.info(
-        "Guest message: chat_id=%s user_id=%s text=%r",
-        chat_id, user_id, query_text[:80],
+        "Guest message: chat_id=%s user_id=%s text=%r has_photo=%s",
+        chat_id, user_id, query_text[:80], has_photo,
     )
 
     # Strip the bot handle out of the prompt before resolving the
@@ -752,9 +757,44 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
     # tokens echoing its own name.
     prompt_source = _strip_bot_mention(query_text, bot_username_lower)
 
-    result = resolve(prompt_source)
+    # If the guest message has no caption but carries a photo, use a
+    # dummy source string so ``resolve`` still picks a random model —
+    # ``pick_vision_model`` below will swap it for Kimi/Qwen anyway.
+    result = resolve(prompt_source or "фото")
     prompt = result.prompt or prompt_source
-    model_label = result.model.label
+    model_entry = result.model
+
+    # --- Vision auto-switch (guest mode) -------------------------------
+    # If a photo is attached, download it and force a vision-capable
+    # model (Kimi → Qwen). This mirrors the behaviour of ``handle_message``
+    # so guest-mode users get image analysis too.
+    vision_overridden = False
+    image_data_url: str | None = None
+    if has_photo:
+        image_data_url = await _download_telegram_photo(bot, guest_message)
+        if image_data_url is None:
+            # Downloading failed — return a friendly error article.
+            await guest_message.answer_guest_query(
+                result=InlineQueryResultArticle(
+                    id=f"guest_photo_err_{random.randint(1, 999_999)}",
+                    title="❌ Не удалось загрузить фото",
+                    description="Попробуй в ЛС с ботом",
+                    input_message_content=InputTextMessageContent(
+                        message_text=(
+                            "❌ Не удалось загрузить изображение из Telegram. "
+                            "Попробуй прислать фото в личке бота — в guest-режиме "
+                            "Telegram иногда не даёт скачать медиа."
+                        ),
+                    ),
+                ),
+            )
+            return
+        new_model = pick_vision_model(model_entry)
+        if new_model.id != model_entry.id:
+            vision_overridden = True
+        model_entry = new_model
+
+    model_label = model_entry.label
 
     # --- Thread semantics (matches the group-chat behaviour) ---
     # A fresh top-level @bot message (no reply_to_message) starts a
@@ -767,8 +807,16 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
     if not is_reply:
         _guest_conv.pop((chat_id, user_id), None)
 
-    # Store user message and build history
-    _guest_append(chat_id, user_id, "user", prompt)
+    # Store user message and build history. For photo messages we record
+    # a textual placeholder instead of the base64 blob, to keep the
+    # in-memory guest history bounded.
+    stored_prompt = (
+        prompt.strip()
+        if prompt.strip()
+        else ("[Изображение без подписи]" if has_photo else "")
+    )
+    if stored_prompt:
+        _guest_append(chat_id, user_id, "user", stored_prompt)
     history = _guest_get_history(chat_id, user_id)[:-1]  # exclude current msg
     log.info(
         "Guest history for (%s, %s): %d messages (is_reply=%s)",
@@ -776,7 +824,14 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
     )
 
     # --- Step 1: send placeholder and get inline_message_id ---
-    if result.was_explicit:
+    if has_photo and vision_overridden:
+        status_text = (
+            f"🖼 Фото получено — переключаю на **{model_label}** (vision).\n"
+            f"🧠 Анализирую..."
+        )
+    elif has_photo:
+        status_text = f"🖼 **{model_label}** анализирует изображение..."
+    elif result.was_explicit:
         status_text = f"🧠 {model_label} думает..."
     else:
         status_text = f"🎲 Случайная модель: {model_label}\n🧠 Думает..."
@@ -813,9 +868,22 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
             pass
 
     try:
+        # Build the prompt payload: plain string for text-only, OpenAI-style
+        # multimodal content for photo messages.
+        if image_data_url is not None:
+            effective_prompt = (
+                prompt.strip() if prompt.strip() else "Опиши, что изображено на фото."
+            )
+            ai_prompt: Any = [
+                {"type": "text", "text": effective_prompt},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ]
+        else:
+            ai_prompt = prompt
+
         response_text, used_model = await _generate_with_fallback(
-            primary=result.model,
-            prompt=prompt,
+            primary=model_entry,
+            prompt=ai_prompt,
             history=history,
             on_progress=_guest_progress,
         )
