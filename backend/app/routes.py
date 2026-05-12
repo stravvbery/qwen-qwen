@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import random
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -18,8 +17,6 @@ from .fireworks import FireworksError, StreamDelta, ToolCall
 from .fireworks import stream_chat as fireworks_stream_chat
 from .freetheai_client import FreeTheAIError
 from .freetheai_client import stream_chat as freetheai_stream_chat
-from .gemini_proxy import GeminiError, get_pool_status
-from .gemini_proxy import stream_chat as gemini_stream_chat
 from .models import Chat, Message
 from .web_tools import TOOL_DEFINITIONS, execute_tool_call, has_any_provider
 
@@ -76,33 +73,18 @@ MODELS: list[schemas.ModelInfo] = [
     ),
     # --- FreeTheAI models ---
     schemas.ModelInfo(
-        id="cat/claude-opus-4-7",
-        label="Claude Opus 4.7",
-        description="Anthropic Claude Opus 4.7 (FreeTheAI).",
-        provider="freetheai",
-        supports_reasoning=True,
-    ),
-    schemas.ModelInfo(
         id="cat/gpt-5.5",
         label="GPT-5.5",
         description="OpenAI GPT-5.5 (FreeTheAI).",
         provider="freetheai",
         supports_reasoning=True,
     ),
+    # --- Gemini via FreeTheAI ---
     schemas.ModelInfo(
-        id="pool/gemini-3-1-pro",
-        label="Gemini 3.1 Pro",
-        description="Google Gemini 3.1 Pro — рандомно через 3 провайдера (FreeTheAI).",
+        id="cat/gemini-3-flash",
+        label="Gemini 3 Flash",
+        description="Google Gemini 3 Flash (FreeTheAI).",
         provider="freetheai",
-        supports_reasoning=True,
-    ),
-    # --- Gemini AI Studio (direct, key rotation) ---
-    schemas.ModelInfo(
-        id="gemini/gemini-2.0-flash",
-        label="Gemini 2.0 Flash",
-        description="Google Gemini 2.0 Flash через AI Studio — быстрая, 6 ключей с ротацией.",
-        provider="gemini",
-        context_length=1_048_576,
         supports_reasoning=False,
     ),
 ]
@@ -110,19 +92,8 @@ MODELS: list[schemas.ModelInfo] = [
 _MODEL_IDS = {m.id for m in MODELS}
 _MODELS_BY_ID = {m.id: m for m in MODELS}
 
-# Gemini 3.1 Pro pool: three backends chosen at random per request.
-_GEMINI_POOL = [
-    ("cat/gemini-3-1-pro", 1),
-    ("fth/reedmayhew/gemini-3.1-pro-distill-reasoning-12B-QKVO-HF", 2),
-    ("yng/gemini-3-1-pro", 3),
-]
-
-
 def _resolve_model(model_id: str) -> tuple[str, int | None]:
-    """Return (actual_model_id, variant) — variant is set only for pool models."""
-    if model_id == "pool/gemini-3-1-pro":
-        actual, variant = random.choice(_GEMINI_POOL)
-        return actual, variant
+    """Return (actual_model_id, variant). No pool models currently in use."""
     return model_id, None
 
 
@@ -130,8 +101,6 @@ def _is_freetheai(model_id: str) -> bool:
     return model_id.startswith(("cat/", "fth/", "yng/", "rev/", "glm/", "img/", "vhr/"))
 
 
-def _is_gemini(model_id: str) -> bool:
-    return model_id.startswith("gemini/")
 
 
 def _ensure_model(model_id: str) -> None:
@@ -211,8 +180,9 @@ async def search_status() -> dict[str, object]:
 
 @router.get("/gemini/status")
 async def gemini_status() -> dict[str, object]:
-    """Return Gemini key pool diagnostics."""
+    """Return Gemini key pool diagnostics (legacy, kept for compatibility)."""
     from .config import settings
+    from .gemini_proxy import get_pool_status
 
     keys = settings.gemini_api_keys_parsed()
     return {
@@ -448,8 +418,6 @@ async def post_message(
                 _do_stream = (
                     freetheai_stream_chat
                     if _is_freetheai(actual_model_id)
-                    else gemini_stream_chat
-                    if _is_gemini(actual_model_id)
                     else fireworks_stream_chat
                 )
                 async for delta in _do_stream(
@@ -530,7 +498,7 @@ async def post_message(
                 reasoning_buf.clear()
                 finish_reason = None
 
-        except (FireworksError, FreeTheAIError, GeminiError) as exc:
+        except (FireworksError, FreeTheAIError) as exc:
             async with SessionLocal() as session:
                 msg = await session.get(Message, assistant_msg_id)
                 if msg is not None:

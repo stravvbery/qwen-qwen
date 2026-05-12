@@ -53,20 +53,14 @@ const SPECS: Record<string, AvatarSpec> = {
     gradient: "from-emerald-300 via-teal-500 to-cyan-800",
     ring: "shadow-[0_0_0_1px_rgba(45,212,191,0.5),0_10px_30px_-12px_rgba(15,118,110,0.6)]",
   },
-  // Claude Opus — Anthropic warm terracotta.
-  "cat/claude-opus-4-7": {
-    initial: "C",
-    gradient: "from-orange-300 via-amber-600 to-yellow-900",
-    ring: "shadow-[0_0_0_1px_rgba(217,119,6,0.5),0_10px_30px_-12px_rgba(146,64,14,0.65)]",
-  },
   // GPT-5.5 — OpenAI green.
   "cat/gpt-5.5": {
     initial: "G",
     gradient: "from-emerald-400 via-green-600 to-teal-800",
     ring: "shadow-[0_0_0_1px_rgba(16,185,129,0.5),0_10px_30px_-12px_rgba(5,150,105,0.6)]",
   },
-  // Gemini 3.1 Pro pool — Google blue.
-  "pool/gemini-3-1-pro": {
+  // Gemini 3 Flash — Google blue.
+  "cat/gemini-3-flash": {
     initial: "G",
     gradient: "from-blue-300 via-blue-500 to-indigo-700",
     ring: "shadow-[0_0_0_1px_rgba(59,130,246,0.5),0_10px_30px_-12px_rgba(37,99,235,0.65)]",
