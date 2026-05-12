@@ -33,7 +33,7 @@ from ..fireworks import stream_chat as fireworks_stream_chat
 from ..freetheai_client import FreeTheAIError
 from ..freetheai_client import stream_chat as freetheai_stream_chat
 from ..web_tools import TOOL_DEFINITIONS, execute_tool_call, has_any_provider
-from .model_resolver import MODELS, ResolveResult, resolve
+from .model_resolver import MODELS, ResolveResult, needs_search, resolve
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +49,10 @@ _MAX_MSG_LEN = 4096  # Telegram message limit
 # ---------------------------------------------------------------------------
 _conv_store: dict[tuple[int, int], dict[str, Any]] = {}
 _MAX_HISTORY = 20  # max messages in reply chain to keep context bounded
+
+# Guest mode conversation buffer: (chat_id, user_id) → list of messages
+_guest_conv: dict[tuple[int, int], list[dict[str, str]]] = {}
+_GUEST_MAX_HISTORY = 10
 
 
 def _build_reply_chain(chat_id: int, message: types.Message) -> list[dict[str, str]]:
@@ -88,6 +92,27 @@ def _store_message(
         keys = list(_conv_store.keys())
         for k in keys[:1000]:
             _conv_store.pop(k, None)
+
+
+def _guest_get_history(chat_id: int, user_id: int) -> list[dict[str, str]]:
+    """Return recent conversation history for a guest-mode user."""
+    key = (chat_id, user_id)
+    return list(_guest_conv.get(key, []))
+
+
+def _guest_append(chat_id: int, user_id: int, role: str, content: str) -> None:
+    """Append a message to the guest-mode conversation buffer."""
+    key = (chat_id, user_id)
+    buf = _guest_conv.setdefault(key, [])
+    buf.append({"role": role, "content": content})
+    # Keep bounded
+    if len(buf) > _GUEST_MAX_HISTORY * 2:
+        _guest_conv[key] = buf[-_GUEST_MAX_HISTORY:]
+    # Evict old users if too many
+    if len(_guest_conv) > 2000:
+        keys = list(_guest_conv.keys())
+        for k in keys[:500]:
+            _guest_conv.pop(k, None)
 
 
 _TOOLS_SYSTEM_PROMPT = (
@@ -133,9 +158,14 @@ async def cmd_models(message: types.Message) -> None:
     lines = []
     for m in MODELS:
         aliases = ", ".join(m.aliases[:4])
-        lines.append(f"• **{m.label}** [{m.provider}]\n  _{aliases}_")
+        flags = ""
+        if m.supports_tools:
+            flags += " 🔍"
+        if not m.in_random_pool:
+            flags += " (только по запросу)"
+        lines.append(f"• *{m.label}*{flags}\n  _{aliases}_")
     await message.answer(
-        "🤖 **Доступные модели:**\n\n" + "\n".join(lines),
+        "🤖 *Доступные модели:*\n\n" + "\n".join(lines),
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -330,9 +360,16 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
         )
         return
 
+    chat_id = guest_message.chat.id
+    user_id = guest_message.from_user.id if guest_message.from_user else 0
+
     result = resolve(query_text)
     prompt = result.prompt or query_text
     model_label = result.model.label
+
+    # Store user message and build history
+    _guest_append(chat_id, user_id, "user", prompt)
+    history = _guest_get_history(chat_id, user_id)[:-1]  # exclude current msg
 
     # --- Step 1: send placeholder and get inline_message_id ---
     if result.was_explicit:
@@ -375,8 +412,12 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
         response_text = await _generate_response(
             model=result.model,
             prompt=prompt,
+            history=history,
             on_progress=_guest_progress,
         )
+
+        # Store bot response for future context
+        _guest_append(chat_id, user_id, "assistant", response_text)
 
         final_text = f"**{model_label}:**\n\n{response_text[:_MAX_MSG_LEN - 100]}"
         await _safe_edit(final_text, bot=bot, inline_message_id=inline_msg_id)
@@ -530,9 +571,8 @@ async def _generate_response(
     ``history`` is an optional list of prior messages (oldest-first) from
     the reply chain, so the model can see conversation context.
     """
-    # FreeTheAI upstream rejects the tools payload for most models,
-    # so only enable tool-calling for providers that support it.
-    can_use_tools = model.provider != "freetheai" and has_any_provider()
+    # Only enable tool-calling for models that support it.
+    can_use_tools = model.supports_tools and has_any_provider()
     tools = TOOL_DEFINITIONS if can_use_tools else None
 
     messages: list[dict[str, Any]] = []
@@ -547,31 +587,63 @@ async def _generate_response(
     else:
         stream_fn = fireworks_stream_chat
 
+    model_id = model.id
+
     # --- First pass: might get tool calls ---
     full_content = ""
     tool_calls_acc: dict[int, ToolCall] = {}
     last_edit_time = 0.0
 
-    async for delta in stream_fn(
-        model=model.id,
-        messages=messages,
-        tools=tools,
-    ):
-        for tc in delta.tool_calls:
-            idx = len(tool_calls_acc)
-            if tc.id:
-                tool_calls_acc[idx] = ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
-            elif tool_calls_acc:
-                last_key = max(tool_calls_acc.keys())
-                tool_calls_acc[last_key].arguments += tc.arguments
+    try:
+        async for delta in stream_fn(
+            model=model_id,
+            messages=messages,
+            tools=tools,
+        ):
+            for tc in delta.tool_calls:
+                idx = len(tool_calls_acc)
+                if tc.id:
+                    tool_calls_acc[idx] = ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
+                elif tool_calls_acc:
+                    last_key = max(tool_calls_acc.keys())
+                    tool_calls_acc[last_key].arguments += tc.arguments
 
-        full_content += delta.content
+            full_content += delta.content
 
-        now = asyncio.get_event_loop().time()
-        if full_content and (now - last_edit_time) > _EDIT_INTERVAL:
-            last_edit_time = now
-            preview = f"🧠 {model.label} генерирует...\n\n{full_content[-500:]}"
-            await on_progress(preview)
+            now = asyncio.get_event_loop().time()
+            if full_content and (now - last_edit_time) > _EDIT_INTERVAL:
+                last_edit_time = now
+                preview = f"🧠 {model.label} генерирует...\n\n{full_content[-500:]}"
+                await on_progress(preview)
+    except (FireworksError, FreeTheAIError):
+        # If the primary model fails and there's a fallback, try it
+        if model.fallback_id:
+            log.info("Primary model %s failed, trying fallback %s", model_id, model.fallback_id)
+            model_id = model.fallback_id
+            full_content = ""
+            tool_calls_acc = {}
+            async for delta in stream_fn(
+                model=model_id,
+                messages=messages,
+                tools=tools,
+            ):
+                for tc in delta.tool_calls:
+                    idx = len(tool_calls_acc)
+                    if tc.id:
+                        tool_calls_acc[idx] = ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
+                    elif tool_calls_acc:
+                        last_key = max(tool_calls_acc.keys())
+                        tool_calls_acc[last_key].arguments += tc.arguments
+
+                full_content += delta.content
+
+                now = asyncio.get_event_loop().time()
+                if full_content and (now - last_edit_time) > _EDIT_INTERVAL:
+                    last_edit_time = now
+                    preview = f"🧠 {model.label} генерирует...\n\n{full_content[-500:]}"
+                    await on_progress(preview)
+        else:
+            raise
 
     # --- Handle tool calls (web search) ---
     if tool_calls_acc:
@@ -606,7 +678,7 @@ async def _generate_response(
 
         full_content = ""
         async for delta in stream_fn(
-            model=model.id,
+            model=model_id,
             messages=messages,
             tools=None,
         ):
@@ -633,7 +705,7 @@ async def _generate_response_simple(
     Performs at most one round of tool calls (web_search / read_webpage)
     to keep latency bounded.
     """
-    can_use_tools = model.provider != "freetheai" and has_any_provider()
+    can_use_tools = model.supports_tools and has_any_provider()
     tools = TOOL_DEFINITIONS if can_use_tools else None
 
     messages: list[dict[str, Any]] = []
