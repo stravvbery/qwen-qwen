@@ -6,7 +6,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, TypeDecorator
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, TypeDecorator
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -77,6 +77,7 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text, default="")
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
     model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    variant: Mapped[int | None] = mapped_column(Integer, nullable=True)
     attachments: Mapped[list[str] | None] = mapped_column(JSONList, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

@@ -26,6 +26,7 @@ class MessageOut(BaseModel):
     content: str
     reasoning: str | None = None
     model: str | None = None
+    variant: int | None = None
     attachments: list[str] | None = None
     created_at: datetime
 

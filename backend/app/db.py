@@ -42,6 +42,10 @@ async def init_db() -> None:
             await conn.execute(
                 text("ALTER TABLE messages ADD COLUMN attachments TEXT")
             )
+        if "variant" not in columns:
+            await conn.execute(
+                text("ALTER TABLE messages ADD COLUMN variant INTEGER")
+            )
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

@@ -346,7 +346,7 @@ async def post_message(
     )
     history = list(result.scalars())
 
-    assistant_msg = Message(chat_id=chat.id, role="assistant", content="", model=model_id)
+    assistant_msg = Message(chat_id=chat.id, role="assistant", content="", model=model_id, variant=variant)
     db.add(assistant_msg)
     await db.flush()
 
@@ -545,6 +545,7 @@ async def post_message(
                     "content": final_content,
                     "reasoning": final_reasoning,
                     "model": model_id,
+                    "variant": variant,
                     "created_at": assistant_created.isoformat(),
                 },
             },
