@@ -42,6 +42,16 @@ router = Router()
 _EDIT_INTERVAL = 1.5  # seconds
 _MAX_MSG_LEN = 4096  # Telegram message limit
 
+_TOOLS_SYSTEM_PROMPT = (
+    "You are a helpful AI assistant in a Telegram chat. "
+    "You have access to web_search and read_webpage tools. "
+    "When the user's question requires up-to-date information, "
+    "recent events, real-time data, current prices, weather, news, "
+    "or anything you are unsure about — use the web_search tool. "
+    "Do NOT say you cannot search the internet — you CAN and SHOULD "
+    "use the provided tools. Always prefer searching over declining."
+)
+
 
 # ---------------------------------------------------------------------------
 # /start command
@@ -391,11 +401,12 @@ async def _generate_response(
     The caller decides *how* to render it (edit a chat message, edit an
     inline message, etc.).
     """
-    messages: list[dict[str, Any]] = [
-        {"role": "user", "content": prompt},
-    ]
-
     tools = TOOL_DEFINITIONS if has_any_provider() else None
+
+    messages: list[dict[str, Any]] = []
+    if tools:
+        messages.append({"role": "system", "content": _TOOLS_SYSTEM_PROMPT})
+    messages.append({"role": "user", "content": prompt})
 
     if model.provider == "freetheai":
         stream_fn = freetheai_stream_chat
@@ -483,21 +494,22 @@ async def _generate_response_simple(
 ) -> str:
     """Non-streaming AI response with optional web search.
 
-    Used for inline queries and Bot API 10.0 guest mode where we have to
-    return a single ``InlineQueryResult`` synchronously instead of streaming
-    edits. Performs at most one round of tool calls (web_search / read_webpage)
+    Used for inline queries where we have to return a single
+    ``InlineQueryResult`` synchronously instead of streaming edits.
+    Performs at most one round of tool calls (web_search / read_webpage)
     to keep latency bounded.
     """
-    messages: list[dict[str, Any]] = [
-        {"role": "user", "content": prompt},
-    ]
+    tools = TOOL_DEFINITIONS if has_any_provider() else None
+
+    messages: list[dict[str, Any]] = []
+    if tools:
+        messages.append({"role": "system", "content": _TOOLS_SYSTEM_PROMPT})
+    messages.append({"role": "user", "content": prompt})
 
     if model.provider == "freetheai":
         stream_fn = freetheai_stream_chat
     else:
         stream_fn = fireworks_stream_chat
-
-    tools = TOOL_DEFINITIONS if has_any_provider() else None
 
     full_content = ""
     tool_calls_acc: dict[int, ToolCall] = {}
