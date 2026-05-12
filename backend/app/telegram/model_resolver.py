@@ -24,6 +24,7 @@ class ModelEntry:
     supports_tools: bool = True  # whether the model can use web_search tools
     in_random_pool: bool = True  # whether included in random selection
     fallback_id: str = ""  # fallback model id if primary fails
+    supports_vision: bool = False  # whether the model accepts image inputs
 
 
 MODELS: list[ModelEntry] = [
@@ -46,6 +47,7 @@ MODELS: list[ModelEntry] = [
             "kimi", "кими", "кімі", "k2", "к2",
         ),
         supports_tools=False,
+        supports_vision=True,
     ),
     ModelEntry(
         id="accounts/fireworks/models/qwen3p6-plus",
@@ -54,6 +56,7 @@ MODELS: list[ModelEntry] = [
         aliases=(
             "qwen", "квен", "квін", "кьюэн", "кюэн", "qwen3",
         ),
+        supports_vision=True,
     ),
     ModelEntry(
         id="accounts/fireworks/models/minimax-m2p7",
@@ -216,3 +219,42 @@ def resolve(text: str) -> ResolveResult:
     else:
         model = random.choice(_RANDOM_POOL)
     return ResolveResult(model=model, prompt=stripped, was_explicit=False)
+
+
+# ---------------------------------------------------------------------------
+# Vision model picker
+# ---------------------------------------------------------------------------
+
+# Preferred order when the user attaches a photo: Kimi first, Qwen as fallback.
+# Only these two models on Fireworks reliably handle image inputs — the
+# remaining models either don't support vision at all or misbehave on images.
+_VISION_PRIORITY: tuple[str, ...] = (
+    "accounts/fireworks/models/kimi-k2p6",
+    "accounts/fireworks/models/qwen3p6-plus",
+)
+
+
+def pick_vision_model(preferred: ModelEntry | None = None) -> ModelEntry:
+    """Return a vision-capable model.
+
+    If ``preferred`` is already vision-capable, return it untouched so an
+    explicit user choice (e.g. caption ''квен опиши фото'') is honoured.
+    Otherwise fall back to the first available model from
+    :data:`_VISION_PRIORITY`.
+    """
+    if preferred is not None and preferred.supports_vision:
+        return preferred
+
+    by_id = {m.id: m for m in MODELS}
+    for model_id in _VISION_PRIORITY:
+        model = by_id.get(model_id)
+        if model is not None and model.supports_vision:
+            return model
+
+    # Last-resort: any vision-capable model we know about.
+    for model in MODELS:
+        if model.supports_vision:
+            return model
+
+    # Should never happen: the bot ships with Kimi + Qwen as vision models.
+    raise RuntimeError("No vision-capable model configured")
