@@ -685,12 +685,18 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
     addressed = _guest_is_addressed(guest_message, bot_username_lower, bot_id)
 
     if not addressed:
-        if query_text:
+        # Only cache the message if it's part of an existing thread
+        # (i.e. it replies to something). A bare unaddressed message
+        # with no reply_to is just background chatter in the guest
+        # session and should not pollute any future thread.
+        is_reply = guest_message.reply_to_message is not None
+        if query_text and is_reply:
             _guest_append(chat_id, user_id, "user", query_text)
         log.info(
-            "Guest message not addressed to bot — silent cache only "
-            "(chat_id=%s user_id=%s text=%r)",
-            chat_id, user_id, query_text[:80],
+            "Guest message not addressed to bot — %s "
+            "(chat_id=%s user_id=%s is_reply=%s text=%r)",
+            "silent cache" if is_reply else "silent drop",
+            chat_id, user_id, is_reply, query_text[:80],
         )
         try:
             # Telegram expects exactly one answer per guest_query_id. We
@@ -750,10 +756,24 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
     prompt = result.prompt or prompt_source
     model_label = result.model.label
 
+    # --- Thread semantics (matches the group-chat behaviour) ---
+    # A fresh top-level @bot message (no reply_to_message) starts a
+    # brand-new thread and must NOT inherit memory from earlier turns
+    # in this guest session. Only an explicit reply continues the
+    # existing thread. This mirrors the reply-chain model the user
+    # asked for in groups: "обычное сообщение должно начинать новую
+    # ветку, не затрагивая старую память".
+    is_reply = guest_message.reply_to_message is not None
+    if not is_reply:
+        _guest_conv.pop((chat_id, user_id), None)
+
     # Store user message and build history
     _guest_append(chat_id, user_id, "user", prompt)
     history = _guest_get_history(chat_id, user_id)[:-1]  # exclude current msg
-    log.info("Guest history for (%s, %s): %d messages", chat_id, user_id, len(history))
+    log.info(
+        "Guest history for (%s, %s): %d messages (is_reply=%s)",
+        chat_id, user_id, len(history), is_reply,
+    )
 
     # --- Step 1: send placeholder and get inline_message_id ---
     if result.was_explicit:
