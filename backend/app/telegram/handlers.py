@@ -362,6 +362,10 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
 
     chat_id = guest_message.chat.id
     user_id = guest_message.from_user.id if guest_message.from_user else 0
+    log.info(
+        "Guest message: chat_id=%s user_id=%s text=%r",
+        chat_id, user_id, query_text[:80],
+    )
 
     result = resolve(query_text)
     prompt = result.prompt or query_text
@@ -370,6 +374,7 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
     # Store user message and build history
     _guest_append(chat_id, user_id, "user", prompt)
     history = _guest_get_history(chat_id, user_id)[:-1]  # exclude current msg
+    log.info("Guest history for (%s, %s): %d messages", chat_id, user_id, len(history))
 
     # --- Step 1: send placeholder and get inline_message_id ---
     if result.was_explicit:
