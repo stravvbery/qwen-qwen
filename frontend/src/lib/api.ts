@@ -63,6 +63,7 @@ export interface StreamCallbacks {
     user_message: Message;
     assistant_message_id: string;
     model: string;
+    variant?: number | null;
   }) => void;
   onDelta?: (data: { content?: string; reasoning?: string }) => void;
   onTitle?: (title: string) => void;

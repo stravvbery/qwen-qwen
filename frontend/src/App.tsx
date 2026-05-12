@@ -256,7 +256,7 @@ export default function App() {
           web_search: webSearch || undefined,
         },
         {
-          onMeta: ({ user_message, assistant_message_id, model }) => {
+          onMeta: ({ user_message, assistant_message_id, model, variant }) => {
             setMessages((prev) =>
               prev.map((message) => {
                 if (message.id === localUserId) return user_message;
@@ -266,6 +266,7 @@ export default function App() {
                     id: assistant_message_id,
                     chat_id: chatId!,
                     model,
+                    variant: variant ?? null,
                   };
                 }
                 return message;

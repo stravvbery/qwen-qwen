@@ -54,7 +54,8 @@ export function MessageBubble({ message, isStreaming, design }: MessageBubblePro
             isUser ? (
               "USER"
             ) : (
-              message.model?.replace("accounts/fireworks/models/", "") ?? "AI"
+              (message.model?.replace("accounts/fireworks/models/", "").replace("pool/", "") ?? "AI") +
+              (message.variant != null ? ` (${message.variant})` : "")
             )
           ) : isUser ? (
             <span
@@ -169,7 +170,12 @@ export function MessageBubble({ message, isStreaming, design }: MessageBubblePro
                 isZero && "font-mono uppercase tracking-[0.18em]",
               )}
             >
-              {message.model.replace("accounts/fireworks/models/", "")}
+              {message.model.replace("accounts/fireworks/models/", "").replace("pool/", "")}
+              {message.variant != null && (
+                <span className="ml-1 text-accent font-semibold">
+                  ({message.variant})
+                </span>
+              )}
             </div>
           )}
         </div>

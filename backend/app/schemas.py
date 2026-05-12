@@ -11,6 +11,7 @@ class ModelInfo(BaseModel):
     id: str
     label: str
     description: str
+    provider: str = "fireworks"
     context_length: int | None = None
     supports_reasoning: bool = False
     supports_vision: bool = False

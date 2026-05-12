@@ -80,7 +80,14 @@ export function ModelPicker({ models, value, onChange }: ModelPickerProps) {
                   )}
                 />
                 <div className="min-w-0">
-                  <div className="text-sm font-medium text-text">{m.label}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm font-medium text-text">{m.label}</span>
+                    {m.provider === "freetheai" && (
+                      <span className="shrink-0 rounded bg-accent-soft px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-accent">
+                        FTA
+                      </span>
+                    )}
+                  </div>
                   <div className="text-xs text-text-muted mt-0.5">{m.description}</div>
                   {m.context_length ? (
                     <div className="text-[10px] uppercase tracking-wide text-text-subtle mt-1">
