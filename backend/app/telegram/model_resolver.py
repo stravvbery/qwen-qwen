@@ -45,6 +45,7 @@ MODELS: list[ModelEntry] = [
         aliases=(
             "kimi", "кими", "кімі", "k2", "к2",
         ),
+        supports_tools=False,
     ),
     ModelEntry(
         id="accounts/fireworks/models/qwen3p6-plus",
