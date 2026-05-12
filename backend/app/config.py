@@ -43,6 +43,9 @@ class Settings(BaseSettings):
         default=6.5, alias="FREETHEAI_MIN_INTERVAL_SECONDS",
     )
 
+    # --- Telegram bot ---
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+
     # --- web-search providers ---
     tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
     serper_api_key: str = Field(default="", alias="SERPER_API_KEY")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,11 +15,33 @@ from .config import settings
 from .db import init_db
 from .routes import router
 
+log = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+
+    # Start Telegram bot in background if token is configured
+    bot_state = None
+    if settings.telegram_bot_token:
+        try:
+            from .telegram.bot import start_bot_background, stop_bot_background
+
+            bot, dp, task = await start_bot_background()
+            bot_state = (bot, dp, task)
+            log.info("Telegram bot started alongside FastAPI")
+        except Exception:
+            log.exception("Failed to start Telegram bot — continuing without it")
+
     yield
+
+    # Shutdown bot
+    if bot_state:
+        from .telegram.bot import stop_bot_background
+
+        bot, dp, task = bot_state
+        await stop_bot_background(bot, dp, task)
 
 
 def create_app() -> FastAPI:
