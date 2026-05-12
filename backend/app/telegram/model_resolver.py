@@ -152,7 +152,9 @@ _SEARCH_KEYWORDS = re.compile(
     r"свежи[йехм]|latest|current|recent|"
     r"дата выход|когда выйд|release date|when.+(?:release|come out)|"
     r"счёт|score|результат матч|"
-    r"что случил|что произош|what happened)"
+    r"что случил|что произош|what happened|"
+    r"градус|температур|скок|скольк|щас?\b|сейчас|"
+    r"degrees|temperature|forecast|прогноз)"
 )
 
 
