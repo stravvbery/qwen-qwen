@@ -11,12 +11,15 @@ Handles:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiogram import Bot, Router, types
 from aiogram.enums import ChatAction, ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     InlineQuery,
@@ -28,8 +31,6 @@ from ..fireworks import FireworksError, ToolCall
 from ..fireworks import stream_chat as fireworks_stream_chat
 from ..freetheai_client import FreeTheAIError
 from ..freetheai_client import stream_chat as freetheai_stream_chat
-from ..gemini_proxy import GeminiError
-from ..gemini_proxy import stream_chat as gemini_stream_chat
 from ..web_tools import TOOL_DEFINITIONS, execute_tool_call, has_any_provider
 from .model_resolver import MODELS, ResolveResult, resolve
 
@@ -57,8 +58,8 @@ async def cmd_start(message: types.Message) -> None:
         f"{models_list}\n\n"
         "Если не указать модель — выберу случайную.\n\n"
         "**Примеры:**\n"
-        "• `клод расскажи про квантовые компьютеры`\n"
-        "• `дипсик напиши код на python`\n"
+        "• `дипсик расскажи про квантовые компьютеры`\n"
+        "• `флеш напиши код на python`\n"
         "• `что такое нейросеть?` (случайная модель)\n\n"
         "🔍 Также поддерживается поиск в интернете (автоматически).",
         parse_mode=ParseMode.MARKDOWN,
@@ -111,36 +112,39 @@ async def handle_message(message: types.Message, bot: Bot) -> None:
     # Start typing indicator
     typing_task = asyncio.create_task(_keep_typing(bot, message.chat.id))
 
+    async def _dm_progress(text: str) -> None:
+        try:
+            await status_msg.edit_text(text[:_MAX_MSG_LEN], parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            pass
+
     try:
         response_text = await _generate_response(
-            bot=bot,
-            chat_id=message.chat.id,
-            status_msg=status_msg,
             model=result.model,
             prompt=prompt,
+            on_progress=_dm_progress,
         )
 
         # Final edit with complete response
         final_text = f"**{model_label}:**\n\n{response_text}"
         if len(final_text) > _MAX_MSG_LEN:
-            # Split into chunks
             chunks = _split_text(final_text, _MAX_MSG_LEN)
-            await status_msg.edit_text(chunks[0], parse_mode=ParseMode.MARKDOWN)
+            await _safe_edit(chunks[0], msg=status_msg)
             for chunk in chunks[1:]:
-                await message.answer(chunk, parse_mode=ParseMode.MARKDOWN)
+                await _safe_send(message, chunk)
         else:
-            await status_msg.edit_text(final_text, parse_mode=ParseMode.MARKDOWN)
+            await _safe_edit(final_text, msg=status_msg)
 
-    except (FireworksError, FreeTheAIError, GeminiError) as e:
-        await status_msg.edit_text(
-            f"❌ Ошибка от **{model_label}**:\n`{str(e)[:500]}`",
-            parse_mode=ParseMode.MARKDOWN,
+    except (FireworksError, FreeTheAIError) as e:
+        await _safe_edit(
+            f"❌ Ошибка от {model_label}:\n{str(e)[:500]}",
+            msg=status_msg, parse_mode=None,
         )
     except Exception as e:
         log.exception("Unexpected error in handle_message")
-        await status_msg.edit_text(
-            f"❌ Непредвиденная ошибка:\n`{str(e)[:300]}`",
-            parse_mode=ParseMode.MARKDOWN,
+        await _safe_edit(
+            f"❌ Непредвиденная ошибка:\n{str(e)[:300]}",
+            msg=status_msg, parse_mode=None,
         )
     finally:
         typing_task.cancel()
@@ -219,8 +223,15 @@ async def handle_inline_query(inline_query: InlineQuery) -> None:
 # ---------------------------------------------------------------------------
 
 @router.guest_message()
-async def handle_guest_message(guest_message: types.Message) -> None:
-    """Reply to a guest-mode query coming from a chat the bot is not in."""
+async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
+    """Reply to a guest-mode query with streaming progress updates.
+
+    Flow:
+    1. Send immediate placeholder via ``answerGuestQuery``.
+    2. Get back ``SentGuestMessage.inline_message_id``.
+    3. Stream AI response, periodically editing the inline message.
+    4. Final edit with the complete answer (markdown with plain-text fallback).
+    """
     guest_query_id = guest_message.guest_query_id
     if not guest_query_id:
         log.warning("guest_message update without guest_query_id; skipping")
@@ -232,7 +243,7 @@ async def handle_guest_message(guest_message: types.Message) -> None:
             result=InlineQueryResultArticle(
                 id=f"guest_empty_{random.randint(1, 999_999)}",
                 title="Напиши вопрос боту",
-                description="Пример: «клод что нового в Python 3.13?»",
+                description="Пример: «дипсик что нового в Python 3.13?»",
                 input_message_content=InputTextMessageContent(
                     message_text=(
                         "Привет! Чтобы получить ответ — добавь текст после "
@@ -247,49 +258,67 @@ async def handle_guest_message(guest_message: types.Message) -> None:
     prompt = result.prompt or query_text
     model_label = result.model.label
 
+    # --- Step 1: send placeholder and get inline_message_id ---
+    if result.was_explicit:
+        status_text = f"🧠 {model_label} думает..."
+    else:
+        status_text = f"🎲 Случайная модель: {model_label}\n🧠 Думает..."
+
     try:
-        response_text = await _generate_response_simple(
+        sent = await guest_message.answer_guest_query(
+            result=InlineQueryResultArticle(
+                id=f"guest_{random.randint(1, 999_999_999)}",
+                title=f"🧠 {model_label}",
+                description="Генерирую ответ...",
+                input_message_content=InputTextMessageContent(
+                    message_text=status_text,
+                ),
+            ),
+        )
+    except Exception:
+        log.exception("Failed to send initial guest query answer")
+        return
+
+    inline_msg_id: str | None = getattr(sent, "inline_message_id", None)
+    if not inline_msg_id:
+        log.warning("answerGuestQuery returned no inline_message_id")
+        return
+
+    # --- Step 2: stream response with periodic edits ---
+    async def _guest_progress(text: str) -> None:
+        try:
+            await bot.edit_message_text(
+                text=text[:_MAX_MSG_LEN],
+                inline_message_id=inline_msg_id,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            pass
+
+    try:
+        response_text = await _generate_response(
             model=result.model,
             prompt=prompt,
-        )
-        short = (
-            response_text[:200] + "..."
-            if len(response_text) > 200
-            else response_text
-        )
-        message_text = f"**{model_label}:**\n\n{response_text[: _MAX_MSG_LEN - 100]}"
-        article = InlineQueryResultArticle(
-            id=f"guest_{random.randint(1, 999_999_999)}",
-            title=f"🤖 {model_label}",
-            description=short,
-            input_message_content=InputTextMessageContent(
-                message_text=message_text,
-                parse_mode=ParseMode.MARKDOWN,
-            ),
-        )
-    except (FireworksError, FreeTheAIError, GeminiError) as e:
-        article = InlineQueryResultArticle(
-            id=f"guest_err_{random.randint(1, 999_999)}",
-            title=f"❌ Ошибка от {model_label}",
-            description=str(e)[:100],
-            input_message_content=InputTextMessageContent(
-                message_text=f"❌ Ошибка от **{model_label}**: `{str(e)[:300]}`",
-                parse_mode=ParseMode.MARKDOWN,
-            ),
-        )
-    except Exception as e:
-        log.exception("Unexpected error in handle_guest_message")
-        article = InlineQueryResultArticle(
-            id=f"guest_err_{random.randint(1, 999_999)}",
-            title="❌ Ошибка",
-            description=str(e)[:100],
-            input_message_content=InputTextMessageContent(
-                message_text=f"❌ Непредвиденная ошибка: `{str(e)[:300]}`",
-                parse_mode=ParseMode.MARKDOWN,
-            ),
+            on_progress=_guest_progress,
         )
 
-    await guest_message.answer_guest_query(result=article)
+        final_text = f"**{model_label}:**\n\n{response_text[:_MAX_MSG_LEN - 100]}"
+        await _safe_edit(final_text, bot=bot, inline_message_id=inline_msg_id)
+
+    except (FireworksError, FreeTheAIError) as e:
+        await _safe_edit(
+            f"❌ Ошибка от {model_label}: {str(e)[:300]}",
+            bot=bot, inline_message_id=inline_msg_id, parse_mode=None,
+        )
+    except Exception as e:
+        log.exception("Unexpected error in guest_message streaming")
+        try:
+            await _safe_edit(
+                f"❌ Непредвиденная ошибка: {str(e)[:300]}",
+                bot=bot, inline_message_id=inline_msg_id, parse_mode=None,
+            )
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -306,27 +335,70 @@ async def _keep_typing(bot: Bot, chat_id: int) -> None:
         pass
 
 
+# Type alias for the progress callback used by _generate_response.
+_ProgressFn = Callable[[str], Awaitable[None]]
+
+
+async def _noop_progress(_text: str) -> None:
+    pass
+
+
+async def _safe_edit(
+    text: str,
+    *,
+    msg: types.Message | None = None,
+    bot: Bot | None = None,
+    inline_message_id: str | None = None,
+    parse_mode: str | None = ParseMode.MARKDOWN,
+) -> None:
+    """Edit a message with automatic Markdown → plain-text fallback."""
+    for pm in (parse_mode, None) if parse_mode else (None,):
+        try:
+            if inline_message_id and bot:
+                await bot.edit_message_text(
+                    text=text[:_MAX_MSG_LEN],
+                    inline_message_id=inline_message_id,
+                    parse_mode=pm,
+                )
+            elif msg:
+                await msg.edit_text(text[:_MAX_MSG_LEN], parse_mode=pm)
+            return
+        except TelegramBadRequest as exc:
+            if "can't parse entities" in str(exc).lower() and pm is not None:
+                continue
+            raise
+
+
+async def _safe_send(message: types.Message, text: str) -> types.Message:
+    """Send a message with automatic Markdown → plain-text fallback."""
+    try:
+        return await message.answer(text[:_MAX_MSG_LEN], parse_mode=ParseMode.MARKDOWN)
+    except TelegramBadRequest as exc:
+        if "can't parse entities" in str(exc).lower():
+            return await message.answer(text[:_MAX_MSG_LEN])
+        raise
+
+
 async def _generate_response(
     *,
-    bot: Bot,
-    chat_id: int,
-    status_msg: types.Message,
     model: Any,
     prompt: str,
+    on_progress: _ProgressFn = _noop_progress,
 ) -> str:
-    """Generate AI response with streaming updates and tool calling."""
+    """Generate AI response with streaming progress callbacks and tool calling.
+
+    ``on_progress`` is invoked periodically with a status/preview string.
+    The caller decides *how* to render it (edit a chat message, edit an
+    inline message, etc.).
+    """
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": prompt},
     ]
 
-    # Decide whether to send tools
     tools = TOOL_DEFINITIONS if has_any_provider() else None
 
-    # Pick the right stream function
     if model.provider == "freetheai":
         stream_fn = freetheai_stream_chat
-    elif model.provider == "gemini":
-        stream_fn = gemini_stream_chat
     else:
         stream_fn = fireworks_stream_chat
 
@@ -340,7 +412,6 @@ async def _generate_response(
         messages=messages,
         tools=tools,
     ):
-        # Accumulate tool calls
         for tc in delta.tool_calls:
             idx = len(tool_calls_acc)
             if tc.id:
@@ -351,35 +422,24 @@ async def _generate_response(
 
         full_content += delta.content
 
-        # Periodic edit to show progress
         now = asyncio.get_event_loop().time()
         if full_content and (now - last_edit_time) > _EDIT_INTERVAL:
             last_edit_time = now
-            preview = f"🧠 **{model.label}** генерирует...\n\n{full_content[-500:]}"
-            try:
-                await status_msg.edit_text(
-                    preview[:_MAX_MSG_LEN],
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-            except Exception:
-                pass  # Telegram rate limit or same content
+            preview = f"🧠 {model.label} генерирует...\n\n{full_content[-500:]}"
+            await on_progress(preview)
 
     # --- Handle tool calls (web search) ---
     if tool_calls_acc:
         for _idx, tc in tool_calls_acc.items():
-            # Update status: searching
-            try:
-                await status_msg.edit_text(
-                    f"🔍 **{model.label}** ищет в интернете...\n\n"
-                    f"`{tc.name}({tc.arguments[:100]})`",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-            except Exception:
-                pass
+            tc.arguments = _ensure_json_arguments(tc.arguments)
+
+            await on_progress(
+                f"🔍 {model.label} ищет в интернете...\n\n"
+                f"{tc.name}({tc.arguments[:100]})"
+            )
 
             tool_result = await execute_tool_call(tc.name, tc.arguments)
 
-            # Build messages with tool result and ask for final answer
             messages.append({
                 "role": "assistant",
                 "content": full_content or None,
@@ -397,34 +457,21 @@ async def _generate_response(
                 "content": tool_result[:8000],
             })
 
-        # Second pass — get final answer with search results
-        try:
-            await status_msg.edit_text(
-                f"✍️ **{model.label}** формирует ответ с учётом поиска...",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        except Exception:
-            pass
+        await on_progress(f"✍️ {model.label} формирует ответ с учётом поиска...")
 
         full_content = ""
         async for delta in stream_fn(
             model=model.id,
             messages=messages,
-            tools=None,  # no more tools in second pass
+            tools=None,
         ):
             full_content += delta.content
 
             now = asyncio.get_event_loop().time()
             if full_content and (now - last_edit_time) > _EDIT_INTERVAL:
                 last_edit_time = now
-                preview = f"✍️ **{model.label}** пишет...\n\n{full_content[-500:]}"
-                try:
-                    await status_msg.edit_text(
-                        preview[:_MAX_MSG_LEN],
-                        parse_mode=ParseMode.MARKDOWN,
-                    )
-                except Exception:
-                    pass
+                preview = f"✍️ {model.label} пишет...\n\n{full_content[-500:]}"
+                await on_progress(preview)
 
     return full_content or "(пустой ответ)"
 
@@ -447,8 +494,6 @@ async def _generate_response_simple(
 
     if model.provider == "freetheai":
         stream_fn = freetheai_stream_chat
-    elif model.provider == "gemini":
-        stream_fn = gemini_stream_chat
     else:
         stream_fn = fireworks_stream_chat
 
@@ -475,6 +520,9 @@ async def _generate_response_simple(
 
     if not tool_calls_acc:
         return full_content or "(пустой ответ)"
+
+    for tc in tool_calls_acc.values():
+        tc.arguments = _ensure_json_arguments(tc.arguments)
 
     messages.append(
         {
@@ -509,6 +557,24 @@ async def _generate_response_simple(
         full_content += delta.content
 
     return full_content or "(пустой ответ)"
+
+
+def _ensure_json_arguments(raw: str) -> str:
+    """Ensure tool-call arguments are a valid JSON object string.
+
+    Some models produce empty strings, bare values, or malformed JSON.
+    Fireworks requires a JSON object string for ``function.arguments``.
+    """
+    raw = raw.strip()
+    if not raw:
+        return "{}"
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return raw
+        return json.dumps({"query": str(parsed)})
+    except (json.JSONDecodeError, ValueError):
+        return json.dumps({"query": raw})
 
 
 def _split_text(text: str, max_len: int) -> list[str]:

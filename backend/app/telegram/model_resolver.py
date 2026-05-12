@@ -66,16 +66,6 @@ MODELS: list[ModelEntry] = [
         ),
     ),
     ModelEntry(
-        id="cat/claude-opus-4-7",
-        label="Claude Opus 4.7",
-        provider="freetheai",
-        aliases=(
-            "claude", "клод", "клауд", "клоде", "клауде", "клоуд",
-            "cloud", "opus", "опус", "антропик", "anthropic",
-            "клауді", "кло", "клау",
-        ),
-    ),
-    ModelEntry(
         id="cat/gpt-5.5",
         label="GPT-5.5",
         provider="freetheai",
@@ -85,21 +75,14 @@ MODELS: list[ModelEntry] = [
         ),
     ),
     ModelEntry(
-        id="pool/gemini-3-1-pro",
-        label="Gemini 3.1 Pro",
+        id="cat/gemini-3-flash",
+        label="Gemini 3 Flash",
         provider="freetheai",
         aliases=(
             "gemini", "джемини", "джеміні", "гемини", "гугл", "google",
             "gem", "джем",
-        ),
-    ),
-    ModelEntry(
-        id="gemini/gemini-2.0-flash",
-        label="Gemini 2.0 Flash",
-        provider="gemini",
-        aliases=(
             "flash", "флеш", "geminiflash", "джеминифлеш", "gf",
-            "гф", "флэш", "2flash",
+            "гф", "флэш",
         ),
     ),
 ]

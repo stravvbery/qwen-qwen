@@ -29,7 +29,7 @@ _COOLDOWN_SECONDS = 60.0
 
 # Gemini API base
 _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
-_MODEL_ID = "gemini-2.0-flash"
+_MODEL_ID = "gemini-3.1-flash-lite-preview"
 
 
 class GeminiError(FireworksError):
