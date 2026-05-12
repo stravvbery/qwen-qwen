@@ -69,6 +69,7 @@ MODELS: list[ModelEntry] = [
         aliases=(
             "glm", "глм", "zhipu", "жипу",
         ),
+        supports_tools=False,
     ),
 
     # --- FreeTheAI: bbg backend ---
