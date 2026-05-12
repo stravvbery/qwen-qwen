@@ -694,23 +694,21 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
         )
         try:
             # Telegram expects exactly one answer per guest_query_id. We
-            # hand back a neutral hint that the user has to actively
-            # send from the guest UI to appear in the chat — in practice
-            # they won't, and no message is posted. This keeps the guest
-            # session healthy without us speaking up uninvited.
+            # hand back an almost-invisible neutral article the user
+            # would have to actively send to appear in the chat — in
+            # practice they won't, and no message is posted. The prior
+            # "🤫 Упомяни меня, чтобы я включился в диалог." hint was
+            # visually noisy in the guest preview; replaced with a bare
+            # thin-space title so the card is basically blank.
             await guest_message.answer_guest_query(
                 result=InlineQueryResultArticle(
                     id=f"guest_silent_{random.randint(1, 999_999_999)}",
-                    title="🤫 Молчу",
-                    description=(
-                        f"Упомяни @{bot_username_lower or 'меня'}, "
-                        "чтобы я ответил."
-                    ),
+                    # Thin space — renders as a near-empty line in the
+                    # guest preview card instead of a chatty prompt.
+                    title="\u2009",
+                    description="",
                     input_message_content=InputTextMessageContent(
-                        message_text=(
-                            f"Упомяни @{bot_username_lower or 'меня'}, "
-                            "чтобы я включился в диалог."
-                        ),
+                        message_text="\u2009",
                     ),
                 ),
             )
