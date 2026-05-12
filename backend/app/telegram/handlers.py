@@ -26,6 +26,8 @@ from ..fireworks import FireworksError, StreamDelta, ToolCall
 from ..fireworks import stream_chat as fireworks_stream_chat
 from ..freetheai_client import FreeTheAIError
 from ..freetheai_client import stream_chat as freetheai_stream_chat
+from ..gemini_proxy import GeminiError
+from ..gemini_proxy import stream_chat as gemini_stream_chat
 from ..web_tools import TOOL_DEFINITIONS, execute_tool_call, has_any_provider
 from .model_resolver import MODELS, ResolveResult, resolve
 
@@ -127,7 +129,7 @@ async def handle_message(message: types.Message, bot: Bot) -> None:
         else:
             await status_msg.edit_text(final_text, parse_mode=ParseMode.MARKDOWN)
 
-    except (FireworksError, FreeTheAIError) as e:
+    except (FireworksError, FreeTheAIError, GeminiError) as e:
         await status_msg.edit_text(
             f"❌ Ошибка от **{model_label}**:\n`{str(e)[:500]}`",
             parse_mode=ParseMode.MARKDOWN,
@@ -237,6 +239,8 @@ async def _generate_response(
     # Pick the right stream function
     if model.provider == "freetheai":
         stream_fn = freetheai_stream_chat
+    elif model.provider == "gemini":
+        stream_fn = gemini_stream_chat
     else:
         stream_fn = fireworks_stream_chat
 
@@ -351,6 +355,8 @@ async def _generate_response_simple(
 
     if model.provider == "freetheai":
         stream_fn = freetheai_stream_chat
+    elif model.provider == "gemini":
+        stream_fn = gemini_stream_chat
     else:
         stream_fn = fireworks_stream_chat
 

@@ -93,6 +93,15 @@ MODELS: list[ModelEntry] = [
             "gem", "джем",
         ),
     ),
+    ModelEntry(
+        id="gemini/gemini-2.0-flash",
+        label="Gemini 2.0 Flash",
+        provider="gemini",
+        aliases=(
+            "flash", "флеш", "geminiflash", "джеминифлеш", "gf",
+            "гф", "флэш", "2flash",
+        ),
+    ),
 ]
 
 # Build a lookup: alias → ModelEntry

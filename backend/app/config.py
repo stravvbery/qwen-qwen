@@ -46,6 +46,29 @@ class Settings(BaseSettings):
     # --- Telegram bot ---
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
 
+    # --- Gemini AI Studio (key rotation proxy) ---
+    # Comma-separated list of API keys, optionally with project names:
+    # "key1:project1,key2:project2,key3:project3"
+    # or just "key1,key2,key3" (auto-named project_1, project_2, etc.)
+    gemini_api_keys: str = Field(default="", alias="GEMINI_API_KEYS")
+
+    def gemini_api_keys_parsed(self) -> list[tuple[str, str]]:
+        """Parse GEMINI_API_KEYS into list of (key, project_name) tuples."""
+        raw = self.gemini_api_keys.strip()
+        if not raw:
+            return []
+        keys: list[tuple[str, str]] = []
+        for i, part in enumerate(raw.split(","), 1):
+            part = part.strip()
+            if not part:
+                continue
+            if ":" in part:
+                key, name = part.split(":", 1)
+                keys.append((key.strip(), name.strip()))
+            else:
+                keys.append((part, f"project_{i}"))
+        return keys
+
     # --- web-search providers ---
     tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
     serper_api_key: str = Field(default="", alias="SERPER_API_KEY")

@@ -18,6 +18,8 @@ from .fireworks import FireworksError, StreamDelta, ToolCall
 from .fireworks import stream_chat as fireworks_stream_chat
 from .freetheai_client import FreeTheAIError
 from .freetheai_client import stream_chat as freetheai_stream_chat
+from .gemini_proxy import GeminiError, get_pool_status
+from .gemini_proxy import stream_chat as gemini_stream_chat
 from .models import Chat, Message
 from .web_tools import TOOL_DEFINITIONS, execute_tool_call, has_any_provider
 
@@ -94,6 +96,15 @@ MODELS: list[schemas.ModelInfo] = [
         provider="freetheai",
         supports_reasoning=True,
     ),
+    # --- Gemini AI Studio (direct, key rotation) ---
+    schemas.ModelInfo(
+        id="gemini/gemini-2.0-flash",
+        label="Gemini 2.0 Flash",
+        description="Google Gemini 2.0 Flash через AI Studio — быстрая, 6 ключей с ротацией.",
+        provider="gemini",
+        context_length=1_048_576,
+        supports_reasoning=False,
+    ),
 ]
 
 _MODEL_IDS = {m.id for m in MODELS}
@@ -117,6 +128,10 @@ def _resolve_model(model_id: str) -> tuple[str, int | None]:
 
 def _is_freetheai(model_id: str) -> bool:
     return model_id.startswith(("cat/", "fth/", "yng/", "rev/", "glm/", "img/", "vhr/"))
+
+
+def _is_gemini(model_id: str) -> bool:
+    return model_id.startswith("gemini/")
 
 
 def _ensure_model(model_id: str) -> None:
@@ -191,6 +206,19 @@ async def search_status() -> dict[str, object]:
             "serper": bool(settings.serper_api_key),
             "firecrawl": bool(settings.firecrawl_api_key),
         },
+    }
+
+
+@router.get("/gemini/status")
+async def gemini_status() -> dict[str, object]:
+    """Return Gemini key pool diagnostics."""
+    from .config import settings
+
+    keys = settings.gemini_api_keys_parsed()
+    return {
+        "configured": len(keys) > 0,
+        "total_keys": len(keys),
+        "keys": get_pool_status(),
     }
 
 
@@ -420,6 +448,8 @@ async def post_message(
                 _do_stream = (
                     freetheai_stream_chat
                     if _is_freetheai(actual_model_id)
+                    else gemini_stream_chat
+                    if _is_gemini(actual_model_id)
                     else fireworks_stream_chat
                 )
                 async for delta in _do_stream(
@@ -500,7 +530,7 @@ async def post_message(
                 reasoning_buf.clear()
                 finish_reason = None
 
-        except (FireworksError, FreeTheAIError) as exc:
+        except (FireworksError, FreeTheAIError, GeminiError) as exc:
             async with SessionLocal() as session:
                 msg = await session.get(Message, assistant_msg_id)
                 if msg is not None:
