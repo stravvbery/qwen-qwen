@@ -76,15 +76,6 @@ MODELS: list[ModelEntry] = [
         supports_tools=False,
     ),
 
-    # --- FreeTheAI: bbg backend ---
-    ModelEntry(
-        id="bbg/deepseek-ai/DeepSeek-V4-Flash",
-        label="DeepSeek V4 Flash",
-        provider="freetheai",
-        aliases=("дипсик1", "dsflash", "дсфлеш", "deepseekflash"),
-        supports_tools=False,
-    ),
-
     # --- FreeTheAI: bbl backend (tools work) ---
     ModelEntry(
         id="bbl/gemini-3.0-flash",
@@ -143,6 +134,9 @@ _RANDOM_POOL: list[ModelEntry] = [m for m in MODELS if m.in_random_pool]
 
 # Models that support web search tools
 SEARCH_MODELS: list[ModelEntry] = [m for m in MODELS if m.supports_tools]
+
+# Index for quick lookup by id (used by the fallback chain)
+_BY_ID: dict[str, ModelEntry] = {m.id: m for m in MODELS}
 
 
 # ---------------------------------------------------------------------------
@@ -245,9 +239,8 @@ def pick_vision_model(preferred: ModelEntry | None = None) -> ModelEntry:
     if preferred is not None and preferred.supports_vision:
         return preferred
 
-    by_id = {m.id: m for m in MODELS}
     for model_id in _VISION_PRIORITY:
-        model = by_id.get(model_id)
+        model = _BY_ID.get(model_id)
         if model is not None and model.supports_vision:
             return model
 
@@ -258,3 +251,63 @@ def pick_vision_model(preferred: ModelEntry | None = None) -> ModelEntry:
 
     # Should never happen: the bot ships with Kimi + Qwen as vision models.
     raise RuntimeError("No vision-capable model configured")
+
+
+# ---------------------------------------------------------------------------
+# Fallback chain — ordered list of models to try when the current one stalls.
+# ---------------------------------------------------------------------------
+
+# Ordered by observed responsiveness on our Fireworks / FreeTheAI proxies.
+# Qwen and MiniMax consistently answer within a few seconds; the FreeTheAI
+# models come next. DeepSeek V4 Pro is intentionally excluded from the
+# fallback chain because it is slow by design and would not help with a
+# "no-liveness" timeout.
+_FALLBACK_CHAIN_IDS: tuple[str, ...] = (
+    "accounts/fireworks/models/qwen3p6-plus",
+    "accounts/fireworks/models/minimax-m2p7",
+    "accounts/fireworks/models/kimi-k2p6",
+    "bbl/gemini-3.0-flash",
+    "cat/gpt-5.5",
+    "cat/claude-4-5-sonnet",
+    "bbl/gpt-5-mini",
+)
+
+
+def fallback_chain(primary: ModelEntry) -> list[ModelEntry]:
+    """Return an ordered list of fallback models to try after ``primary``.
+
+    The list excludes ``primary`` itself and any model not in the registry.
+    Vision-capable models are kept at the top of the chain when ``primary``
+    supports vision, so a stalled vision request fails over to another VLM
+    rather than to a text-only model that would drop the image.
+    """
+    chain: list[ModelEntry] = []
+    seen = {primary.id}
+    for model_id in _FALLBACK_CHAIN_IDS:
+        if model_id in seen:
+            continue
+        candidate = _BY_ID.get(model_id)
+        if candidate is None:
+            continue
+        if primary.supports_vision and not candidate.supports_vision:
+            # For a vision request, prefer other VLMs; skip text-only models
+            # here and we'll re-add them at the end as best-effort text
+            # fallbacks below.
+            continue
+        chain.append(candidate)
+        seen.add(model_id)
+
+    # If this was a vision request, append text-only models at the tail so
+    # we still have something to try if every VLM is down (the request will
+    # silently lose the image, but at least the user gets an answer).
+    if primary.supports_vision:
+        for model_id in _FALLBACK_CHAIN_IDS:
+            if model_id in seen:
+                continue
+            candidate = _BY_ID.get(model_id)
+            if candidate is None:
+                continue
+            chain.append(candidate)
+            seen.add(model_id)
+
+    return chain

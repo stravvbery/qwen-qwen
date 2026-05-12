@@ -39,6 +39,7 @@ from .model_resolver import (
     MODELS,
     ModelEntry,
     ResolveResult,
+    fallback_chain,
     pick_vision_model,
     resolve,
 )
@@ -50,6 +51,11 @@ router = Router()
 # How often to edit the message during streaming (avoid Telegram rate limits)
 _EDIT_INTERVAL = 1.5  # seconds
 _MAX_MSG_LEN = 4096  # Telegram message limit
+
+# When a model produces no output (no content delta, no tool call) for this
+# many seconds, we treat it as dead and fail over to the next model in the
+# fallback chain. 7 s is the user's requested budget.
+_NO_LIVENESS_TIMEOUT = 7.0
 
 # ---------------------------------------------------------------------------
 # In-memory conversation store for reply-chain context
@@ -135,6 +141,82 @@ _TOOLS_SYSTEM_PROMPT = (
 
 
 # ---------------------------------------------------------------------------
+# Bot identity cache and mention detection for group chats
+# ---------------------------------------------------------------------------
+
+# Populated lazily on the first message — ``Bot.get_me()`` requires an await
+# so we can't do it at import time.
+_bot_id: int | None = None
+_bot_username_lower: str | None = None
+
+
+async def _get_bot_identity(bot: Bot) -> tuple[int, str | None]:
+    """Return ``(bot_id, bot_username_lower)``, caching the result."""
+    global _bot_id, _bot_username_lower
+    if _bot_id is None:
+        me = await bot.get_me()
+        _bot_id = me.id
+        _bot_username_lower = me.username.lower() if me.username else None
+    return _bot_id, _bot_username_lower
+
+
+def _is_bot_mentioned(
+    message: types.Message,
+    bot_id: int,
+    bot_username_lower: str | None,
+) -> bool:
+    """Return True if this message explicitly addresses the bot.
+
+    The bot is considered addressed when any of the following hold:
+
+    * The user replied to one of the bot's own messages.
+    * The text contains a ``@botusername`` mention (handled via message
+      entities so we don't misfire on ``@someone_else``).
+    * The text contains a ``text_mention`` entity pointing at the bot's
+      user id (the Telegram client uses this when linking a mention to
+      a user without a public @username).
+
+    In private chats this helper is not consulted — direct messages are
+    always treated as addressed to the bot.
+    """
+    # Entity-based checks (authoritative).
+    text = message.text or message.caption or ""
+    entities = message.entities or message.caption_entities or []
+    for ent in entities:
+        if ent.type == "mention" and bot_username_lower:
+            # ``@username`` mention — compare against our cached handle.
+            mention_text = text[ent.offset : ent.offset + ent.length].lower()
+            if mention_text == f"@{bot_username_lower}":
+                return True
+        elif ent.type == "text_mention" and ent.user is not None:
+            # Inline user reference — works even when the bot has no public
+            # @username (e.g. scoped bots).
+            if ent.user.id == bot_id:
+                return True
+
+    # Reply to one of the bot's own messages.
+    reply = message.reply_to_message
+    if reply and reply.from_user and reply.from_user.id == bot_id:
+        return True
+
+    return False
+
+
+def _strip_bot_mention(text: str, bot_username_lower: str | None) -> str:
+    """Remove the first ``@botusername`` occurrence from ``text``.
+
+    Used to keep the actual prompt clean when the user types
+    ``@botname расскажи про X`` in a group chat.
+    """
+    if not bot_username_lower or not text:
+        return text
+    # Case-insensitive single replace of the handle; preserves surrounding
+    # whitespace and the rest of the message.
+    pattern = re.compile(rf"(?i)@{re.escape(bot_username_lower)}\s*")
+    return pattern.sub("", text, count=1).strip()
+
+
+# ---------------------------------------------------------------------------
 # /start command
 # ---------------------------------------------------------------------------
 
@@ -184,13 +266,35 @@ async def cmd_models(message: types.Message) -> None:
 
 @router.message()
 async def handle_message(message: types.Message, bot: Bot) -> None:
-    """Process any text/photo message: resolve model, call AI, stream response."""
+    """Process any text/photo message: resolve model, call AI, stream response.
+
+    Group-chat policy (fix #4): the bot replies in a group only when the
+    message explicitly addresses it — either via ``@botusername`` mention,
+    a ``text_mention`` entity pointing at the bot, or a reply to one of
+    the bot's own messages. Unaddressed group chatter is silently ignored.
+    Private chats always get a response, as before.
+    """
     # Accept either a plain text message or a photo (with optional caption).
     raw_text = message.text or message.caption or ""
     has_photo = bool(message.photo)
 
     if not raw_text.strip() and not has_photo:
         return
+
+    chat_type = message.chat.type  # "private" | "group" | "supergroup" | "channel"
+    is_private = chat_type == "private"
+
+    bot_id, bot_username_lower = await _get_bot_identity(bot)
+
+    # --- Mention gate for non-private chats ---
+    # In groups and supergroups we stay silent unless the user addressed us
+    # directly. This keeps the bot polite in shared rooms.
+    if not is_private:
+        if not _is_bot_mentioned(message, bot_id, bot_username_lower):
+            return
+        # Drop the leading ``@botusername`` from the prompt so the model
+        # doesn't waste tokens repeating its own name.
+        raw_text = _strip_bot_mention(raw_text, bot_username_lower)
 
     chat_id = message.chat.id
 
@@ -256,16 +360,41 @@ async def handle_message(message: types.Message, bot: Bot) -> None:
     else:
         status_text = f"🎲 Случайная модель: **{model_label}**\n🧠 Думает..."
 
-    status_msg = await message.answer(status_text, parse_mode=ParseMode.MARKDOWN)
+    # --- Choose delivery channel ---
+    # Private chats get the smooth Bot API 10.0 ``sendMessageDraft`` pipeline
+    # so the text visibly scrolls in as it is generated. Group chats fall
+    # back to periodic ``editMessageText`` because ``sendMessageDraft`` is
+    # only supported in private chats.
+    use_draft_streaming = is_private
+    draft_streamer: _DraftStreamer | None = None
+    status_msg: types.Message | None = None
+
+    if use_draft_streaming:
+        draft_streamer = _DraftStreamer(
+            bot=bot,
+            chat_id=chat_id,
+            initial_text=status_text,
+        )
+        await draft_streamer.update(status_text, force=True)
+
+        async def _progress(text: str) -> None:
+            # ``_DraftStreamer`` handles throttling and error suppression.
+            assert draft_streamer is not None
+            await draft_streamer.update(text)
+    else:
+        status_msg = await message.answer(status_text, parse_mode=ParseMode.MARKDOWN)
+
+        async def _progress(text: str) -> None:
+            assert status_msg is not None
+            try:
+                await status_msg.edit_text(
+                    text[:_MAX_MSG_LEN], parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception:
+                pass
 
     # Start typing indicator
     typing_task = asyncio.create_task(_keep_typing(bot, chat_id))
-
-    async def _dm_progress(text: str) -> None:
-        try:
-            await status_msg.edit_text(text[:_MAX_MSG_LEN], parse_mode=ParseMode.MARKDOWN)
-        except Exception:
-            pass
 
     try:
         # Build the ``content`` payload. For vision requests we use the
@@ -282,40 +411,81 @@ async def handle_message(message: types.Message, bot: Bot) -> None:
         else:
             user_content = prompt
 
-        response_text = await _generate_response(
-            model=model_entry,
+        # --- Generate with automatic fallback on stall / error ---
+        # Returns the final response plus the model that actually served it,
+        # which may differ from ``model_entry`` if one or more upstreams
+        # timed out.
+        response_text, used_model = await _generate_with_fallback(
+            primary=model_entry,
             prompt=user_content,
             history=history,
-            on_progress=_dm_progress,
+            on_progress=_progress,
         )
+        final_label = used_model.label
 
-        # Store bot response (linked to the status message id)
-        _store_message(
-            chat_id, status_msg.message_id, "assistant", response_text,
-            reply_to=message.message_id,
-        )
+        final_text = f"**{final_label}:**\n\n{response_text}"
 
-        # Final edit with complete response
-        final_text = f"**{model_label}:**\n\n{response_text}"
-        if len(final_text) > _MAX_MSG_LEN:
-            chunks = _split_text(final_text, _MAX_MSG_LEN)
-            await _safe_edit(chunks[0], msg=status_msg)
-            for chunk in chunks[1:]:
-                await _safe_send(message, chunk)
+        # We record the assistant reply in ``_conv_store`` using the id of
+        # the final message we actually delivered, so the reply-chain
+        # history stays intact whether we streamed via drafts (no
+        # placeholder message exists) or via edit-in-place.
+        final_message_id: int | None = None
+
+        if use_draft_streaming:
+            # Draft streaming: finalise by sending a real ``SendMessage``
+            # with the complete text. The draft is ephemeral (30 s) and
+            # disappears on its own once this message arrives.
+            assert draft_streamer is not None
+            await draft_streamer.finish()
+            sent = await _safe_send_chunks(message, final_text)
+            if sent is not None:
+                final_message_id = sent.message_id
         else:
-            await _safe_edit(final_text, msg=status_msg)
+            # Edit-based streaming: update the placeholder message in place.
+            assert status_msg is not None
+            if len(final_text) > _MAX_MSG_LEN:
+                chunks = _split_text(final_text, _MAX_MSG_LEN)
+                await _safe_edit(chunks[0], msg=status_msg)
+                for chunk in chunks[1:]:
+                    await _safe_send(message, chunk)
+            else:
+                await _safe_edit(final_text, msg=status_msg)
+            final_message_id = status_msg.message_id
+
+        if final_message_id is not None:
+            _store_message(
+                chat_id, final_message_id, "assistant", response_text,
+                reply_to=message.message_id,
+            )
 
     except (FireworksError, FreeTheAIError) as e:
-        await _safe_edit(
-            f"❌ Ошибка от {model_label}:\n{str(e)[:500]}",
-            msg=status_msg, parse_mode=None,
+        error_text = f"❌ Ошибка: {str(e)[:500]}"
+        if draft_streamer is not None:
+            await draft_streamer.finish()
+            await message.answer(error_text)
+        else:
+            assert status_msg is not None
+            await _safe_edit(error_text, msg=status_msg, parse_mode=None)
+    except _ModelStalledError:
+        error_text = (
+            "❌ Все модели сейчас молчат. Попробуй ещё раз через пару секунд "
+            "или выбери конкретную модель (например `квен ...`)."
         )
+        if draft_streamer is not None:
+            await draft_streamer.finish()
+            await message.answer(error_text)
+        else:
+            assert status_msg is not None
+            await _safe_edit(error_text, msg=status_msg, parse_mode=None)
     except Exception as e:
         log.exception("Unexpected error in handle_message")
-        await _safe_edit(
-            f"❌ Непредвиденная ошибка:\n{str(e)[:300]}",
-            msg=status_msg, parse_mode=None,
-        )
+        error_text = f"❌ Непредвиденная ошибка:\n{str(e)[:300]}"
+        if draft_streamer is not None:
+            await draft_streamer.finish()
+            await message.answer(error_text)
+        else:
+            assert status_msg is not None
+            await _safe_edit(error_text, msg=status_msg, parse_mode=None)
     finally:
         typing_task.cancel()
 
@@ -478,22 +648,28 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
             pass
 
     try:
-        response_text = await _generate_response(
-            model=result.model,
+        response_text, used_model = await _generate_with_fallback(
+            primary=result.model,
             prompt=prompt,
             history=history,
             on_progress=_guest_progress,
         )
+        final_label = used_model.label
 
         # Store bot response for future context
         _guest_append(chat_id, user_id, "assistant", response_text)
 
-        final_text = f"**{model_label}:**\n\n{response_text[:_MAX_MSG_LEN - 100]}"
+        final_text = f"**{final_label}:**\n\n{response_text[:_MAX_MSG_LEN - 100]}"
         await _safe_edit(final_text, bot=bot, inline_message_id=inline_msg_id)
 
     except (FireworksError, FreeTheAIError) as e:
         await _safe_edit(
-            f"❌ Ошибка от {model_label}: {str(e)[:300]}",
+            f"❌ Ошибка: {str(e)[:300]}",
+            bot=bot, inline_message_id=inline_msg_id, parse_mode=None,
+        )
+    except _ModelStalledError:
+        await _safe_edit(
+            "❌ Все модели не отвечают. Попробуй ещё раз чуть позже.",
             bot=bot, inline_message_id=inline_msg_id, parse_mode=None,
         )
     except Exception as e:
@@ -519,6 +695,193 @@ async def _keep_typing(bot: Bot, chat_id: int) -> None:
             await asyncio.sleep(4)
     except asyncio.CancelledError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Smooth streaming via Bot API 10.0 ``sendMessageDraft``
+#
+# ``sendMessageDraft`` streams a 30-second ephemeral preview into the chat,
+# and successive calls with the same ``draft_id`` animate the text in the
+# client (letters fade in smoothly instead of the whole message re-rendering
+# on every edit). We throttle updates to ~3 Hz to stay well under Telegram's
+# rate limits, and when generation finishes we send the finalised text as a
+# regular message — the draft then disappears on its own.
+#
+# Limitation: the method only works in private chats (``chat_id`` must be a
+# positive user id). For groups and supergroups we keep the legacy
+# ``editMessageText`` path.
+# ---------------------------------------------------------------------------
+
+# Try to import ``SendMessageDraft`` lazily so the module still imports on
+# older aiogram versions (for tests, local dev, etc.). If the symbol isn't
+# available we simply fall back to ``editMessageText`` everywhere.
+try:  # pragma: no cover — version-dependent import
+    from aiogram.methods import SendMessageDraft as _SendMessageDraft
+except ImportError:  # pragma: no cover
+    _SendMessageDraft = None  # type: ignore[assignment]
+
+
+_DRAFT_UPDATE_INTERVAL = 0.35  # seconds between draft pushes (≈3 Hz)
+
+
+class _DraftStreamer:
+    """Throttled wrapper around ``sendMessageDraft`` for smooth streaming.
+
+    The streamer tracks the last text it pushed and skips updates that would
+    be identical, so rapid token deltas don't overwhelm Telegram's API. If
+    the Bot API 10.0 method is not available in the current aiogram build,
+    all updates become no-ops — the caller will still deliver the final
+    text via ``_safe_send_chunks`` at the end, so the user always gets a
+    reply even without the animation.
+    """
+
+    def __init__(self, *, bot: Bot, chat_id: int, initial_text: str) -> None:
+        self._bot = bot
+        self._chat_id = chat_id
+        # draft_id must be a stable, non-zero int64. Using a chat-scoped
+        # random value avoids collisions with other in-flight drafts.
+        self._draft_id = random.randint(1, 2**31 - 1)
+        self._last_text = ""
+        self._last_push_ts = 0.0
+        # If the very first update was the placeholder status, remember it
+        # so the finaliser can detect "we never received any deltas" and
+        # skip the draft entirely.
+        self._initial_text = initial_text
+        self._alive = _SendMessageDraft is not None
+
+    @property
+    def available(self) -> bool:
+        return self._alive
+
+    async def update(self, text: str, *, force: bool = False) -> None:
+        if not self._alive:
+            return
+        now = asyncio.get_event_loop().time()
+        if not force and (now - self._last_push_ts) < _DRAFT_UPDATE_INTERVAL:
+            return
+        if text == self._last_text:
+            return
+        trimmed = text[:_MAX_MSG_LEN]
+        try:
+            await self._bot(
+                _SendMessageDraft(  # type: ignore[misc]
+                    chat_id=self._chat_id,
+                    draft_id=self._draft_id,
+                    text=trimmed,
+                )
+            )
+            self._last_text = trimmed
+            self._last_push_ts = now
+        except TelegramBadRequest as exc:
+            # Draft stream can fail with "method not allowed" in group chats
+            # or rate-limit errors. Either way, degrade to no-op and let the
+            # caller send the final message via sendMessage.
+            log.info("sendMessageDraft rejected, disabling draft stream: %s", exc)
+            self._alive = False
+        except Exception:
+            log.exception("sendMessageDraft unexpectedly failed")
+            self._alive = False
+
+    async def finish(self) -> None:
+        """Mark the draft as done.
+
+        ``sendMessageDraft`` drafts are ephemeral (30 s server-side TTL), so
+        we don't need to explicitly close them — but we stop accepting new
+        updates to avoid racing with the final ``SendMessage`` that the
+        caller is about to issue.
+        """
+        self._alive = False
+
+
+async def _safe_send_chunks(
+    message: types.Message, text: str,
+) -> types.Message | None:
+    """Send ``text`` as one or more messages, splitting if over the 4096 cap.
+
+    Returns the last sent message (or ``None`` on send failure) so the
+    caller can attribute assistant-role history to it.
+    """
+    last: types.Message | None = None
+    if len(text) <= _MAX_MSG_LEN:
+        last = await _safe_send(message, text)
+        return last
+    for chunk in _split_text(text, _MAX_MSG_LEN):
+        last = await _safe_send(message, chunk)
+    return last
+
+
+# ---------------------------------------------------------------------------
+# No-liveness timeout + automatic model fallback
+# ---------------------------------------------------------------------------
+
+
+class _ModelStalledError(Exception):
+    """Raised when a model produces no output for ``_NO_LIVENESS_TIMEOUT`` s."""
+
+
+async def _generate_with_fallback(
+    *,
+    primary: ModelEntry,
+    prompt: Any,
+    history: list[dict[str, str]] | None,
+    on_progress: _ProgressFn,
+) -> tuple[str, ModelEntry]:
+    """Try ``primary`` first, then cascade through the fallback chain.
+
+    We swap models on two failure modes:
+
+    1. **Hard error** — the upstream raises ``FireworksError`` /
+       ``FreeTheAIError`` (401, 429, timeout, etc.).
+    2. **Stall** — the model accepts the request but produces no output
+       for :data:`_NO_LIVENESS_TIMEOUT` seconds. This catches providers
+       that return 200 OK and then silently hang.
+
+    The returned tuple contains the final text and the model that actually
+    produced it (which may differ from ``primary``).
+    """
+    candidates: list[ModelEntry] = [primary, *fallback_chain(primary)]
+    last_exc: Exception | None = None
+
+    for idx, candidate in enumerate(candidates):
+        if idx > 0:
+            # Keep the user informed when we fail over. We intentionally do
+            # not reveal the technical reason — just the observable fact.
+            await on_progress(
+                f"⚠️ {primary.label} не отвечает — переключаюсь на "
+                f"**{candidate.label}**..."
+            )
+            # Give the typing indicator a beat to refresh.
+            await asyncio.sleep(0.1)
+
+        try:
+            text = await _generate_response(
+                model=candidate,
+                prompt=prompt,
+                history=history,
+                on_progress=on_progress,
+            )
+            return text, candidate
+        except _ModelStalledError as exc:
+            log.warning("Model %s stalled: %s", candidate.id, exc)
+            last_exc = exc
+            continue
+        except (FireworksError, FreeTheAIError) as exc:
+            log.warning("Model %s raised upstream error: %s", candidate.id, exc)
+            last_exc = exc
+            continue
+
+    # All candidates exhausted — propagate the most recent failure so the
+    # caller can surface it to the user.
+    if last_exc is not None:
+        raise last_exc
+    # Defensive: should never hit this because ``candidates`` always
+    # contains at least ``primary``.
+    raise RuntimeError("No candidate models to try")
+
+
+# ---------------------------------------------------------------------------
+# Photo download helper (used by the ``handle_message`` vision branch)
+# ---------------------------------------------------------------------------
 
 
 # Max single-photo size we will pull from Telegram. Fireworks accepts ~20 MB
@@ -668,15 +1031,22 @@ async def _safe_send(message: types.Message, text: str) -> types.Message:
 async def _generate_response(
     *,
     model: Any,
-    prompt: str,
+    prompt: Any,
     history: list[dict[str, str]] | None = None,
     on_progress: _ProgressFn = _noop_progress,
 ) -> str:
     """Generate AI response with streaming progress callbacks and tool calling.
 
-    ``on_progress`` is invoked periodically with a status/preview string.
-    The caller decides *how* to render it (edit a chat message, edit an
-    inline message, etc.).
+    Behaviour:
+
+    * Calls ``on_progress(preview_text)`` periodically so the caller can
+      render a live-updating UI (edit a chat message, push a draft, etc.).
+    * Raises :class:`_ModelStalledError` when the model produces no output
+      (no text delta, no tool call) for :data:`_NO_LIVENESS_TIMEOUT`
+      seconds. The wrapping :func:`_generate_with_fallback` catches this
+      and moves on to the next candidate.
+    * Propagates ``FireworksError`` / ``FreeTheAIError`` on hard failures
+      so the fallback layer can react.
 
     ``history`` is an optional list of prior messages (oldest-first) from
     the reply chain, so the model can see conversation context.
@@ -700,77 +1070,34 @@ async def _generate_response(
     model_id = model.id
 
     # --- First pass: might get tool calls ---
-    full_content = ""
-    tool_calls_acc: dict[int, ToolCall] = {}
-    last_edit_time = 0.0
+    full_content, tool_calls_acc, last_edit_time = await _stream_pass(
+        stream_fn=stream_fn,
+        model_id=model_id,
+        model_label=model.label,
+        messages=messages,
+        tools=tools,
+        on_progress=on_progress,
+        last_edit_time=0.0,
+        status_prefix="🧠",
+        status_verb="генерирует",
+    )
 
-    try:
-        async for delta in stream_fn(
-            model=model_id,
-            messages=messages,
-            tools=tools,
-        ):
-            for tc in delta.tool_calls:
-                idx = len(tool_calls_acc)
-                if tc.id:
-                    tool_calls_acc[idx] = ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
-                elif tool_calls_acc:
-                    last_key = max(tool_calls_acc.keys())
-                    tool_calls_acc[last_key].arguments += tc.arguments
-
-            full_content += delta.content
-
-            now = asyncio.get_event_loop().time()
-            if full_content and (now - last_edit_time) > _EDIT_INTERVAL:
-                last_edit_time = now
-                preview = f"🧠 {model.label} генерирует...\n\n{full_content[-500:]}"
-                await on_progress(preview)
-    except (FireworksError, FreeTheAIError):
-        # If the primary model fails and there's a fallback, try it
-        if model.fallback_id:
-            log.info("Primary model %s failed, trying fallback %s", model_id, model.fallback_id)
-            model_id = model.fallback_id
-            full_content = ""
-            tool_calls_acc = {}
-            async for delta in stream_fn(
-                model=model_id,
-                messages=messages,
-                tools=tools,
-            ):
-                for tc in delta.tool_calls:
-                    idx = len(tool_calls_acc)
-                    if tc.id:
-                        tool_calls_acc[idx] = ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
-                    elif tool_calls_acc:
-                        last_key = max(tool_calls_acc.keys())
-                        tool_calls_acc[last_key].arguments += tc.arguments
-
-                full_content += delta.content
-
-                now = asyncio.get_event_loop().time()
-                if full_content and (now - last_edit_time) > _EDIT_INTERVAL:
-                    last_edit_time = now
-                    preview = f"🧠 {model.label} генерирует...\n\n{full_content[-500:]}"
-                    await on_progress(preview)
-        else:
-            raise
-
-    # If first pass returned empty with no tool calls, retry once
+    # If the first pass returned nothing and no tool call was requested,
+    # retry once — some providers return an empty stream on the first try
+    # but succeed on a second attempt with the same payload.
     if not full_content.strip() and not tool_calls_acc:
         log.warning("Model %s returned empty on first pass, retrying", model_id)
-        async for delta in stream_fn(
-            model=model_id,
+        full_content, tool_calls_acc, last_edit_time = await _stream_pass(
+            stream_fn=stream_fn,
+            model_id=model_id,
+            model_label=model.label,
             messages=messages,
             tools=tools,
-        ):
-            for tc in delta.tool_calls:
-                idx = len(tool_calls_acc)
-                if tc.id:
-                    tool_calls_acc[idx] = ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
-                elif tool_calls_acc:
-                    last_key = max(tool_calls_acc.keys())
-                    tool_calls_acc[last_key].arguments += tc.arguments
-            full_content += delta.content
+            on_progress=on_progress,
+            last_edit_time=last_edit_time,
+            status_prefix="🧠",
+            status_verb="генерирует",
+        )
 
     # --- Handle tool calls (web search) ---
     if tool_calls_acc:
@@ -803,19 +1130,17 @@ async def _generate_response(
 
         await on_progress(f"✍️ {model.label} формирует ответ с учётом поиска...")
 
-        full_content = ""
-        async for delta in stream_fn(
-            model=model_id,
+        full_content, _unused_tools, last_edit_time = await _stream_pass(
+            stream_fn=stream_fn,
+            model_id=model_id,
+            model_label=model.label,
             messages=messages,
             tools=None,
-        ):
-            full_content += delta.content
-
-            now = asyncio.get_event_loop().time()
-            if full_content and (now - last_edit_time) > _EDIT_INTERVAL:
-                last_edit_time = now
-                preview = f"✍️ {model.label} пишет...\n\n{full_content[-500:]}"
-                await on_progress(preview)
+            on_progress=on_progress,
+            last_edit_time=last_edit_time,
+            status_prefix="✍️",
+            status_verb="пишет",
+        )
 
         # If second pass returned empty, nudge the model to respond
         if not full_content.strip():
@@ -823,16 +1148,122 @@ async def _generate_response(
                 "role": "user",
                 "content": "Please summarize the search results and answer the original question.",
             })
-            async for delta in stream_fn(
-                model=model_id,
+            full_content, _unused_tools, _unused_ts = await _stream_pass(
+                stream_fn=stream_fn,
+                model_id=model_id,
+                model_label=model.label,
                 messages=messages,
                 tools=None,
-            ):
-                full_content += delta.content
+                on_progress=on_progress,
+                last_edit_time=last_edit_time,
+                status_prefix="✍️",
+                status_verb="пишет",
+            )
 
     if not full_content.strip():
         return "Модель не смогла сгенерировать ответ. Попробуй ещё раз или выбери другую модель (/models)."
     return full_content
+
+
+async def _stream_pass(
+    *,
+    stream_fn: Any,
+    model_id: str,
+    model_label: str,
+    messages: list[dict[str, Any]],
+    tools: Any,
+    on_progress: _ProgressFn,
+    last_edit_time: float,
+    status_prefix: str,
+    status_verb: str,
+) -> tuple[str, dict[int, ToolCall], float]:
+    """Run one streaming pass with a no-liveness timeout.
+
+    We advance an "alive" deadline every time we receive *any* signal from
+    the model (a content delta, a tool-call fragment, etc.). If the
+    deadline passes without activity, we cancel the stream and raise
+    :class:`_ModelStalledError` so the fallback layer can pick another
+    model. This catches providers that accept the request but never emit
+    anything — which was the user-visible failure mode for the "иногда
+    модели не отвечают вообще" complaint.
+    """
+    full_content = ""
+    tool_calls_acc: dict[int, ToolCall] = {}
+
+    loop = asyncio.get_event_loop()
+    alive_deadline = loop.time() + _NO_LIVENESS_TIMEOUT
+
+    # We iterate the async generator manually so we can wrap each
+    # ``__anext__`` in ``asyncio.wait_for`` and react to a stall without
+    # waiting forever.
+    stream = stream_fn(
+        model=model_id,
+        messages=messages,
+        tools=tools,
+    )
+    aiter = stream.__aiter__()
+
+    try:
+        while True:
+            timeout = alive_deadline - loop.time()
+            if timeout <= 0:
+                raise _ModelStalledError(
+                    f"{model_id} produced no output for "
+                    f"{_NO_LIVENESS_TIMEOUT:.0f}s"
+                )
+            try:
+                delta = await asyncio.wait_for(aiter.__anext__(), timeout=timeout)
+            except StopAsyncIteration:
+                break
+            except TimeoutError as exc:
+                raise _ModelStalledError(
+                    f"{model_id} stalled after "
+                    f"{_NO_LIVENESS_TIMEOUT:.0f}s with no output"
+                ) from exc
+
+            # Any signal counts as liveness, even an empty-content delta
+            # carrying a tool-call id (some providers stream the function
+            # name before the body).
+            had_signal = False
+
+            for tc in delta.tool_calls:
+                had_signal = True
+                idx = len(tool_calls_acc)
+                if tc.id:
+                    tool_calls_acc[idx] = ToolCall(
+                        id=tc.id, name=tc.name, arguments=tc.arguments
+                    )
+                elif tool_calls_acc:
+                    last_key = max(tool_calls_acc.keys())
+                    tool_calls_acc[last_key].arguments += tc.arguments
+
+            if delta.content:
+                had_signal = True
+                full_content += delta.content
+
+            if had_signal:
+                alive_deadline = loop.time() + _NO_LIVENESS_TIMEOUT
+
+            now = loop.time()
+            if full_content and (now - last_edit_time) > _EDIT_INTERVAL:
+                last_edit_time = now
+                preview = (
+                    f"{status_prefix} {model_label} {status_verb}...\n\n"
+                    f"{full_content[-500:]}"
+                )
+                await on_progress(preview)
+    finally:
+        # Best-effort close of the underlying httpx stream. If the
+        # generator doesn't have ``aclose`` (or it was already cleaned up
+        # by a cancellation), just move on.
+        aclose = getattr(stream, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:  # pragma: no cover — cleanup best-effort
+                pass
+
+    return full_content, tool_calls_acc, last_edit_time
 
 
 async def _generate_response_simple(
