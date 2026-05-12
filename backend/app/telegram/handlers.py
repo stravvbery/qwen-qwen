@@ -720,7 +720,9 @@ async def _generate_response(
             ):
                 full_content += delta.content
 
-    return full_content or "(пустой ответ)"
+    if not full_content.strip():
+        return "Модель не смогла сгенерировать ответ. Попробуй ещё раз или выбери другую модель (/models)."
+    return full_content
 
 
 async def _generate_response_simple(
@@ -768,7 +770,9 @@ async def _generate_response_simple(
         full_content += delta.content
 
     if not tool_calls_acc:
-        return full_content or "(пустой ответ)"
+        if not full_content.strip():
+            return "Модель не смогла сгенерировать ответ. Попробуй ещё раз или выбери другую модель (/models)."
+        return full_content
 
     for tc in tool_calls_acc.values():
         tc.arguments = _ensure_json_arguments(tc.arguments)
@@ -805,7 +809,9 @@ async def _generate_response_simple(
     ):
         full_content += delta.content
 
-    return full_content or "(пустой ответ)"
+    if not full_content.strip():
+        return "Модель не смогла сгенерировать ответ. Попробуй ещё раз или выбери другую модель (/models)."
+    return full_content
 
 
 def _ensure_json_arguments(raw: str) -> str:
