@@ -19,7 +19,7 @@ from dataclasses import dataclass
 class ModelEntry:
     id: str
     label: str
-    provider: str  # "fireworks" | "freetheai" | "nvidia"
+    provider: str  # "fireworks" | "freetheai"
     aliases: tuple[str, ...]  # lowercase trigger words
     supports_tools: bool = True  # whether the model can use web_search tools
     in_random_pool: bool = True  # whether included in random selection
@@ -27,89 +27,24 @@ class ModelEntry:
     supports_vision: bool = False  # whether the model accepts image inputs
 
 
-# Model ID conventions:
-#   Fireworks: ``accounts/fireworks/models/<slug>``
-#   FreeTheAI: ``bbl/<slug>`` or ``cat/<slug>``
-#   NVIDIA Build: ``<vendor>/<slug>`` (OpenAI-compatible chat completions at
-#     integrate.api.nvidia.com). Catalog slugs like ``deepseek-ai/deepseek-v3.1``
-#     are passed as-is to the /v1/chat/completions endpoint.
 MODELS: list[ModelEntry] = [
-    # --- NVIDIA Build (primary provider for DeepSeek V4 Pro / GLM) ---
-    # Aliases ``deepseek``/``дипсик``/``glm``/``глм``/``kimi``/``кими`` now
-    # resolve to the NVIDIA-hosted variants; the Fireworks entries below act
-    # as automatic fallbacks via the stall/error chain.
+    # --- Fireworks (all support tools via our proxy) ---
     ModelEntry(
-        id="deepseek-ai/deepseek-v3.1",
+        id="accounts/fireworks/models/deepseek-v4-pro",
         label="DeepSeek V4 Pro",
-        provider="nvidia",
+        provider="fireworks",
         aliases=(
             "deepseek", "дипсик", "дипсік", "діпсік", "deep", "ds",
             "дс", "дип", "дипси", "deepseek-v4",
         ),
-        # Kept out of the random pool for parity with the old Fireworks
-        # behaviour — it's still the slowest reasoning model we expose and
-        # users generally pick it explicitly.
-        in_random_pool=False,
-    ),
-    ModelEntry(
-        id="deepseek-ai/deepseek-v3-flash",
-        label="DeepSeek Flash",
-        provider="nvidia",
-        aliases=(
-            "deepseekflash", "дипсикфлеш", "дипсик-флеш", "ds-flash",
-            "ds flash", "dsflash", "dsf", "dsfl", "дсфл", "дсфлеш",
-            "deepseek flash", "дипсик флеш",
-        ),
-    ),
-    ModelEntry(
-        id="mistralai/mistral-medium-3.5-instruct",
-        label="Mistral Medium 3.5",
-        provider="nvidia",
-        aliases=(
-            "mistral", "мистраль", "містраль", "mistralmedium",
-            "мистральмедиум", "mistral35", "мистраль35",
-            "mistralmedium35", "mm35", "мм35",
-        ),
-    ),
-    ModelEntry(
-        id="moonshotai/kimi-k2.5",
-        label="Kimi K2.6",
-        provider="nvidia",
-        aliases=(
-            "kimi", "кими", "кімі", "k2", "к2", "moonshot", "мунщот",
-        ),
-        # NVIDIA NIM Kimi supports OpenAI-style tool calling.
-        supports_tools=True,
-    ),
-    ModelEntry(
-        id="z-ai/glm-4.7",
-        label="GLM 5.1",
-        provider="nvidia",
-        aliases=(
-            "glm", "глм", "zhipu", "жипу", "z-ai", "zai",
-        ),
-        supports_tools=True,
-    ),
-
-    # --- Fireworks (fallback for the NVIDIA entries above + primary for
-    # the models NVIDIA doesn't host) ---
-    ModelEntry(
-        id="accounts/fireworks/models/deepseek-v4-pro",
-        label="DeepSeek V4 Pro (FW)",
-        provider="fireworks",
-        aliases=(
-            # Secondary aliases so power users can force the Fireworks
-            # variant when the NVIDIA one is misbehaving.
-            "deepseek-fw", "дипсик-fw", "dsfw",
-        ),
-        in_random_pool=False,
+        in_random_pool=False,  # too slow for random, explicit only
     ),
     ModelEntry(
         id="accounts/fireworks/models/kimi-k2p6",
-        label="Kimi K2.6 (FW)",
+        label="Kimi K2.6",
         provider="fireworks",
         aliases=(
-            "kimifw", "кимифw", "k2fw", "к2fw",
+            "kimi", "кими", "кімі", "k2", "к2",
         ),
         supports_tools=False,
         supports_vision=True,
@@ -133,10 +68,10 @@ MODELS: list[ModelEntry] = [
     ),
     ModelEntry(
         id="accounts/fireworks/models/glm-5p1",
-        label="GLM 5.1 (FW)",
+        label="GLM 5.1",
         provider="fireworks",
         aliases=(
-            "glmfw", "глмfw",
+            "glm", "глм", "zhipu", "жипу",
         ),
         supports_tools=False,
     ),
@@ -322,24 +257,15 @@ def pick_vision_model(preferred: ModelEntry | None = None) -> ModelEntry:
 # Fallback chain — ordered list of models to try when the current one stalls.
 # ---------------------------------------------------------------------------
 
-# Ordered by observed responsiveness on our Fireworks / FreeTheAI / NVIDIA
-# proxies.  Fast text-only models come first (they usually answer within
-# a few seconds); providers are interleaved so a whole-provider outage
-# still has a live fallback. Vision fallbacks are handled separately below.
-#
-# DeepSeek V4 Pro (NVIDIA + Fireworks copies) is intentionally kept out of
-# this chain because it's a slow reasoning model and would not help with a
-# "no-liveness" timeout. If the user explicitly picks DeepSeek we'll still
-# try it first, then fall through to these faster candidates.
+# Ordered by observed responsiveness on our Fireworks / FreeTheAI proxies.
+# Qwen and MiniMax consistently answer within a few seconds; the FreeTheAI
+# models come next. DeepSeek V4 Pro is intentionally excluded from the
+# fallback chain because it is slow by design and would not help with a
+# "no-liveness" timeout.
 _FALLBACK_CHAIN_IDS: tuple[str, ...] = (
     "accounts/fireworks/models/qwen3p6-plus",
     "accounts/fireworks/models/minimax-m2p7",
-    "z-ai/glm-4.7",
-    "moonshotai/kimi-k2.5",
-    "deepseek-ai/deepseek-v3-flash",
-    "mistralai/mistral-medium-3.5-instruct",
     "accounts/fireworks/models/kimi-k2p6",
-    "accounts/fireworks/models/glm-5p1",
     "bbl/gemini-3.0-flash",
     "cat/gpt-5.5",
     "cat/claude-4-5-sonnet",
@@ -354,31 +280,9 @@ def fallback_chain(primary: ModelEntry) -> list[ModelEntry]:
     Vision-capable models are kept at the top of the chain when ``primary``
     supports vision, so a stalled vision request fails over to another VLM
     rather than to a text-only model that would drop the image.
-
-    Same-family precedence: if ``primary`` has a known Fireworks twin
-    (e.g. NVIDIA DeepSeek V4 Pro → Fireworks DeepSeek V4 Pro) we try the
-    twin before the generic fast fallbacks so a provider-specific outage
-    stays invisible to the user — they still get an answer from the same
-    model family.
     """
     chain: list[ModelEntry] = []
     seen = {primary.id}
-
-    # Same-family twin: matches on model ``label`` prefix (e.g. both
-    # ``DeepSeek V4 Pro`` and ``DeepSeek V4 Pro (FW)`` share the prefix).
-    # This is cheap and deliberately tolerant — when a twin exists it goes
-    # first so provider-level outages don't force a model swap.
-    family_key = primary.label.split(" (")[0].lower()
-    for candidate in MODELS:
-        if candidate.id in seen:
-            continue
-        if candidate.provider == primary.provider:
-            continue
-        if candidate.label.split(" (")[0].lower() == family_key:
-            chain.append(candidate)
-            seen.add(candidate.id)
-            break  # one twin is enough
-
     for model_id in _FALLBACK_CHAIN_IDS:
         if model_id in seen:
             continue

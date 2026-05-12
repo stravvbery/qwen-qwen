@@ -25,7 +25,6 @@ from aiogram.enums import ChatAction, ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
-    BufferedInputFile,
     InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
@@ -35,9 +34,6 @@ from ..fireworks import FireworksError, ToolCall
 from ..fireworks import stream_chat as fireworks_stream_chat
 from ..freetheai_client import FreeTheAIError
 from ..freetheai_client import stream_chat as freetheai_stream_chat
-from ..nvidia_client import NvidiaError
-from ..nvidia_client import stream_chat as nvidia_stream_chat
-from ..nvidia_image import NvidiaImageError, detect_image_prompt, generate_image
 from ..web_tools import TOOL_DEFINITIONS, execute_tool_call, has_any_provider
 from .model_resolver import (
     MODELS,
@@ -335,24 +331,6 @@ async def handle_message(message: types.Message, bot: Bot) -> None:
 
     chat_id = message.chat.id
 
-    # --- Image generation shortcut ---
-    # If the user opens the message with a "нарисуй"/"создай фото"/"draw ..."
-    # trigger, route to the NVIDIA Qwen Image endpoint instead of the chat
-    # pipeline. This runs before ``resolve()`` so the model alias tokens
-    # inside the image prompt don't get stripped / misinterpreted. Photo
-    # messages stay on the vision path because they carry an actual image
-    # to look at, not a request to generate one.
-    if not has_photo:
-        img_subject = detect_image_prompt(raw_text)
-        if img_subject:
-            await _handle_image_generation(
-                message=message,
-                bot=bot,
-                chat_id=chat_id,
-                subject=img_subject,
-            )
-            return
-
     # Resolve model from the text/caption. For photo-only messages without a
     # caption we synthesise a random-model ResolveResult and rely on the
     # vision override below to swap it for Kimi/Qwen anyway.
@@ -513,7 +491,7 @@ async def handle_message(message: types.Message, bot: Bot) -> None:
                 reply_to=message.message_id,
             )
 
-    except (FireworksError, FreeTheAIError, NvidiaError) as e:
+    except (FireworksError, FreeTheAIError) as e:
         error_text = f"❌ Ошибка: {str(e)[:500]}"
         if draft_streamer is not None:
             await draft_streamer.finish()
@@ -774,19 +752,6 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
     # tokens echoing its own name.
     prompt_source = _strip_bot_mention(query_text, bot_username_lower)
 
-    # --- Image generation shortcut (guest mode) ---
-    # Same detection logic as ``handle_message``: if the message asks to
-    # draw / create a picture, route to the NVIDIA image endpoint and
-    # surface the result through ``answerGuestQuery`` as a photo article.
-    img_subject = detect_image_prompt(prompt_source)
-    if img_subject:
-        await _handle_image_generation_guest(
-            guest_message=guest_message,
-            bot=bot,
-            subject=img_subject,
-        )
-        return
-
     result = resolve(prompt_source)
     prompt = result.prompt or prompt_source
     model_label = result.model.label
@@ -862,7 +827,7 @@ async def handle_guest_message(guest_message: types.Message, bot: Bot) -> None:
         final_text = f"**{final_label}:**\n\n{response_text[:_MAX_MSG_LEN - 100]}"
         await _safe_edit(final_text, bot=bot, inline_message_id=inline_msg_id)
 
-    except (FireworksError, FreeTheAIError, NvidiaError) as e:
+    except (FireworksError, FreeTheAIError) as e:
         await _safe_edit(
             f"❌ Ошибка: {str(e)[:300]}",
             bot=bot, inline_message_id=inline_msg_id, parse_mode=None,
@@ -895,192 +860,6 @@ async def _keep_typing(bot: Bot, chat_id: int) -> None:
             await asyncio.sleep(4)
     except asyncio.CancelledError:
         pass
-
-
-# ---------------------------------------------------------------------------
-# Image generation (NVIDIA Qwen Image)
-# ---------------------------------------------------------------------------
-
-async def _handle_image_generation(
-    *,
-    message: types.Message,
-    bot: Bot,
-    chat_id: int,
-    subject: str,
-) -> None:
-    """Generate an image from ``subject`` and reply to ``message`` with it.
-
-    This is the happy path for a ``нарисуй .../создай фото ...`` request in
-    private chats, groups (once the bot has been @-mentioned), and anywhere
-    ``handle_message`` routes through. We keep the chat-completion path
-    untouched so the normal model-resolution / reply-chain logic still
-    applies to non-image messages.
-    """
-    status_msg = await message.answer(
-        f"🎨 Рисую: *{_escape_md(subject[:200])}*\n"
-        "Qwen Image через NVIDIA — это может занять 20–60 секунд...",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-    # Keep the chat action alive so the user sees the typing/photo indicator
-    # while NVIDIA renders the frame. ``upload_photo`` is the closest action
-    # to "I'm sending you a picture".
-    async def _keep_uploading() -> None:
-        try:
-            while True:
-                await bot.send_chat_action(
-                    chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO,
-                )
-                await asyncio.sleep(4)
-        except asyncio.CancelledError:
-            pass
-
-    indicator = asyncio.create_task(_keep_uploading())
-
-    try:
-        image = await generate_image(prompt=subject)
-    except NvidiaImageError as exc:
-        log.warning("Image generation failed: %s", exc)
-        await _safe_edit(
-            f"❌ Не получилось нарисовать: {str(exc)[:400]}",
-            msg=status_msg, parse_mode=None,
-        )
-        return
-    except Exception:
-        log.exception("Unexpected error in image generation")
-        await _safe_edit(
-            "❌ Непредвиденная ошибка при генерации изображения.",
-            msg=status_msg, parse_mode=None,
-        )
-        return
-    finally:
-        indicator.cancel()
-
-    # Deliver the photo as a reply to the original message. ``BufferedInputFile``
-    # accepts raw bytes — no need to round-trip through the filesystem.
-    photo = BufferedInputFile(image.data, filename="nvidia-qwen-image.png")
-    try:
-        sent = await bot.send_photo(
-            chat_id=chat_id,
-            photo=photo,
-            caption=f"🎨 *Qwen Image* — {_escape_md(subject[:900])}",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_to_message_id=message.message_id,
-        )
-    except TelegramBadRequest as exc:
-        # Fall back to plain-text caption if Markdown broke on the subject.
-        log.info("send_photo rejected markdown caption, retrying plain: %s", exc)
-        sent = await bot.send_photo(
-            chat_id=chat_id,
-            photo=photo,
-            caption=f"🎨 Qwen Image — {subject[:900]}",
-            reply_to_message_id=message.message_id,
-        )
-
-    # Delete the placeholder status message now that the photo arrived.
-    try:
-        await status_msg.delete()
-    except Exception:
-        # Deletion best-effort; if it fails the user just sees both messages.
-        log.debug("Failed to delete image status placeholder", exc_info=True)
-
-    # Record the bot's photo in the reply-chain store so later follow-ups
-    # like ``@bot что на картинке`` as a reply still get relevant context.
-    # We stash the textual subject rather than bytes to keep the store bounded.
-    _store_message(
-        chat_id,
-        sent.message_id,
-        "assistant",
-        f"[Сгенерированное изображение: {subject}]",
-        reply_to=message.message_id,
-    )
-
-
-async def _handle_image_generation_guest(
-    *,
-    guest_message: types.Message,
-    bot: Bot,
-    subject: str,
-) -> None:
-    """Guest-mode variant of :func:`_handle_image_generation`.
-
-    Guest queries must answer via ``answerGuestQuery`` exactly once. We
-    return a text article acknowledging the image request (with a link to
-    the rendered PNG) because Bot API 10.0 doesn't expose a way to embed a
-    binary photo inside an InlineQueryResult without first hosting it
-    elsewhere. For the end user this shows up as a message with the
-    description of what was drawn; if they want the actual picture file
-    they can invoke the bot in DM where ``send_photo`` is available.
-    """
-    try:
-        image = await generate_image(prompt=subject)
-    except NvidiaImageError as exc:
-        log.warning("Guest image generation failed: %s", exc)
-        await _safe_guest_answer(
-            guest_message,
-            title="❌ Не получилось нарисовать",
-            description=str(exc)[:200],
-            message_text=f"❌ Не получилось нарисовать: {str(exc)[:400]}",
-        )
-        return
-    except Exception:
-        log.exception("Unexpected error in guest image generation")
-        await _safe_guest_answer(
-            guest_message,
-            title="❌ Ошибка генерации",
-            description="Попробуй ещё раз чуть позже.",
-            message_text="❌ Непредвиденная ошибка при генерации изображения.",
-        )
-        return
-
-    # We have ``image.data`` (PNG bytes) but can't attach it to the guest
-    # article. Surface a descriptive acknowledgement — the user can open a
-    # DM with the bot to receive the actual file next time.
-    _ = image  # Keep the bytes in scope in case we add hosting later.
-    await _safe_guest_answer(
-        guest_message,
-        title=f"🎨 {subject[:70]}",
-        description=(
-            "Qwen Image нарисовал твой запрос. Открой личку с ботом "
-            "(@testerbo1tbot), чтобы получить файл картинкой."
-        ),
-        message_text=(
-            f"🎨 *Qwen Image* — {subject[:900]}\n\n"
-            "Картинка готова. В guest-режиме Telegram не позволяет "
-            "приложить файл к ответу — напиши боту в личку тем же "
-            "запросом, чтобы получить PNG."
-        ),
-    )
-
-
-async def _safe_guest_answer(
-    guest_message: types.Message,
-    *,
-    title: str,
-    description: str,
-    message_text: str,
-) -> None:
-    """Send a one-shot guest-query answer, swallowing transport errors."""
-    try:
-        await guest_message.answer_guest_query(
-            result=InlineQueryResultArticle(
-                id=f"guest_img_{random.randint(1, 999_999_999)}",
-                title=title[:60],
-                description=description[:100],
-                input_message_content=InputTextMessageContent(
-                    message_text=message_text[:_MAX_MSG_LEN],
-                    parse_mode=ParseMode.MARKDOWN,
-                ),
-            ),
-        )
-    except Exception:
-        log.debug("guest answer failed", exc_info=True)
-
-
-def _escape_md(text: str) -> str:
-    """Escape characters that would break Telegram Markdown V1 captions."""
-    # Markdown V1 special characters: * _ ` [
-    return re.sub(r"([*_`\[])", r"\\\1", text)
 
 
 # ---------------------------------------------------------------------------
@@ -1251,7 +1030,7 @@ async def _generate_with_fallback(
             log.warning("Model %s stalled: %s", candidate.id, exc)
             last_exc = exc
             continue
-        except (FireworksError, FreeTheAIError, NvidiaError) as exc:
+        except (FireworksError, FreeTheAIError) as exc:
             log.warning("Model %s raised upstream error: %s", candidate.id, exc)
             last_exc = exc
             continue
@@ -1450,8 +1229,6 @@ async def _generate_response(
 
     if model.provider == "freetheai":
         stream_fn = freetheai_stream_chat
-    elif model.provider == "nvidia":
-        stream_fn = nvidia_stream_chat
     else:
         stream_fn = fireworks_stream_chat
 
@@ -1676,8 +1453,6 @@ async def _generate_response_simple(
 
     if model.provider == "freetheai":
         stream_fn = freetheai_stream_chat
-    elif model.provider == "nvidia":
-        stream_fn = nvidia_stream_chat
     else:
         stream_fn = fireworks_stream_chat
 
