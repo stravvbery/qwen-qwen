@@ -43,6 +43,25 @@ class Settings(BaseSettings):
         default=6.5, alias="FREETHEAI_MIN_INTERVAL_SECONDS",
     )
 
+    # --- NVIDIA Build / NIM provider ---
+    # OpenAI-compatible chat completions (used for DeepSeek / Mistral / Kimi /
+    # GLM through integrate.api.nvidia.com) plus a separate host for image
+    # generation (Qwen Image via ai.api.nvidia.com/v1/genai).
+    nvidia_api_key: str = Field(default="", alias="NVIDIA_API_KEY")
+    nvidia_base_url: str = Field(
+        default="https://integrate.api.nvidia.com/v1",
+        alias="NVIDIA_BASE_URL",
+    )
+    nvidia_image_base_url: str = Field(
+        default="https://ai.api.nvidia.com/v1/genai",
+        alias="NVIDIA_IMAGE_BASE_URL",
+    )
+    # Preview model id — override via env if NVIDIA adds a newer Qwen Image
+    # variant; current canonical NIM catalog uses ``qwen/qwen-image``.
+    nvidia_image_model: str = Field(
+        default="qwen/qwen-image", alias="NVIDIA_IMAGE_MODEL",
+    )
+
     # --- Telegram bot ---
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
 
