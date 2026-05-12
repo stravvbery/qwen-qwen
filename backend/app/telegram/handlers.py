@@ -11,6 +11,8 @@ Handles:
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import logging
 import random
@@ -33,7 +35,7 @@ from ..fireworks import stream_chat as fireworks_stream_chat
 from ..freetheai_client import FreeTheAIError
 from ..freetheai_client import stream_chat as freetheai_stream_chat
 from ..web_tools import TOOL_DEFINITIONS, execute_tool_call, has_any_provider
-from .model_resolver import MODELS, ResolveResult, resolve
+from .model_resolver import MODELS, ModelEntry, ResolveResult, pick_vision_model, resolve
 
 log = logging.getLogger(__name__)
 
@@ -146,32 +148,72 @@ async def cmd_models(message: types.Message) -> None:
 
 @router.message()
 async def handle_message(message: types.Message, bot: Bot) -> None:
-    """Process any text message: resolve model, call AI, stream response."""
-    if not message.text:
+    """Process any text/photo message: resolve model, call AI, stream response."""
+    # Accept either a plain text message or a photo (with optional caption).
+    raw_text = message.text or message.caption or ""
+    has_photo = bool(message.photo)
+
+    if not raw_text.strip() and not has_photo:
         return
 
     chat_id = message.chat.id
 
-    # Resolve model from message text
-    result: ResolveResult = resolve(message.text)
-    prompt = result.prompt or message.text  # fallback to full text if prompt is empty
+    # Resolve model from the text/caption. For photo-only messages without a
+    # caption we fall through with an empty prompt and rely on the vision
+    # override below to pick Kimi anyway.
+    result: ResolveResult = resolve(raw_text) if raw_text.strip() else ResolveResult(
+        model=random.choice(MODELS), prompt="", was_explicit=False,
+    )
+    prompt = result.prompt or raw_text
 
-    if not prompt.strip():
+    if not has_photo and not prompt.strip():
         await message.answer("Напиши вопрос после названия модели 😊")
         return
 
-    # Store user message (link to the message it replies to, if any)
+    # --- Vision auto-switch ---------------------------------------------
+    # If the user attached a photo, force a vision-capable model (Kimi
+    # first, then Qwen as fallback). If they explicitly picked Kimi or
+    # Qwen themselves, keep that choice — ``pick_vision_model`` honours
+    # any already-vision model.
+    model_entry: ModelEntry = result.model
+    vision_overridden = False
+    image_data_url: str | None = None
+
+    if has_photo:
+        image_data_url = await _download_telegram_photo(bot, message)
+        if image_data_url is None:
+            await message.answer(
+                "❌ Не удалось загрузить изображение из Telegram. "
+                "Попробуй отправить ещё раз или другой файл."
+            )
+            return
+        new_model = pick_vision_model(model_entry)
+        if new_model.id != model_entry.id:
+            vision_overridden = True
+        model_entry = new_model
+
+    # Store user message (link to the message it replies to, if any).
+    # We only persist the textual part — image bytes are intentionally left
+    # out of the history to keep the in-memory store bounded.
     reply_to_id = (
         message.reply_to_message.message_id if message.reply_to_message else None
     )
-    _store_message(chat_id, message.message_id, "user", prompt, reply_to=reply_to_id)
+    stored_prompt = prompt if prompt.strip() else "[Изображение без подписи]"
+    _store_message(chat_id, message.message_id, "user", stored_prompt, reply_to=reply_to_id)
 
     # Build conversation history from reply chain
     history = _build_reply_chain(chat_id, message)
 
     # Send initial status message
-    model_label = result.model.label
-    if result.was_explicit:
+    model_label = model_entry.label
+    if has_photo and vision_overridden:
+        status_text = (
+            f"🖼 Фото получено — переключаю на **{model_label}** (vision).\n"
+            f"🧠 Анализирую..."
+        )
+    elif has_photo:
+        status_text = f"🖼 **{model_label}** анализирует изображение..."
+    elif result.was_explicit:
         status_text = f"🧠 **{model_label}** думает..."
     else:
         status_text = f"🎲 Случайная модель: **{model_label}**\n🧠 Думает..."
@@ -188,9 +230,23 @@ async def handle_message(message: types.Message, bot: Bot) -> None:
             pass
 
     try:
+        # Build the ``content`` payload. For vision requests we use the
+        # OpenAI multimodal form so Fireworks routes both the caption and
+        # the image through the VLM.
+        if image_data_url is not None:
+            effective_prompt = (
+                prompt.strip() if prompt.strip() else "Опиши, что изображено на фото."
+            )
+            user_content: str | list[dict[str, Any]] = [
+                {"type": "text", "text": effective_prompt},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ]
+        else:
+            user_content = prompt
+
         response_text = await _generate_response(
-            model=result.model,
-            prompt=prompt,
+            model=model_entry,
+            prompt=user_content,
             history=history,
             on_progress=_dm_progress,
         )
@@ -409,6 +465,47 @@ async def _keep_typing(bot: Bot, chat_id: int) -> None:
             await asyncio.sleep(4)
     except asyncio.CancelledError:
         pass
+
+
+# Max single-photo size we will pull from Telegram. Fireworks accepts up to
+# ~20 MB base64 payloads, but Telegram's photo delivery rarely exceeds a few
+# MB and keeping this bounded protects us from pathological inputs.
+_MAX_PHOTO_BYTES = 10 * 1024 * 1024
+
+
+async def _download_telegram_photo(bot: Bot, message: types.Message) -> str | None:
+    """Download the best-quality photo on ``message`` and return a data URL.
+
+    Returns ``None`` if the message has no photo or download fails. The
+    returned string is formatted as ``data:image/jpeg;base64,<payload>`` so
+    it can be plugged straight into an OpenAI-style ``image_url`` part.
+    """
+    if not message.photo:
+        return None
+
+    # ``message.photo`` is a list of PhotoSize ordered smallest → largest.
+    # The last entry has the highest resolution available.
+    best = message.photo[-1]
+
+    try:
+        file = await bot.get_file(best.file_id)
+        if not file.file_path:
+            return None
+
+        buffer = io.BytesIO()
+        await bot.download_file(file.file_path, destination=buffer)
+        raw = buffer.getvalue()
+    except Exception:
+        log.exception("Failed to download Telegram photo %s", best.file_id)
+        return None
+
+    if not raw or len(raw) > _MAX_PHOTO_BYTES:
+        return None
+
+    # Telegram re-encodes photos as JPEG on upload, so we can safely label
+    # them as image/jpeg regardless of the original source format.
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
 
 
 # Type alias for the progress callback used by _generate_response.
