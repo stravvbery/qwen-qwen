@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import clsx from "clsx";
-import { api, streamMessage } from "./lib/api";
+import { api, streamMessage, type SearchStatus, type ToolStatusEvent } from "./lib/api";
 import type { Chat, ChatDetail, Message, ModelInfo } from "./lib/types";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
@@ -10,12 +10,14 @@ import { ModelPicker } from "./components/ModelPicker";
 import { EmptyState } from "./components/EmptyState";
 import { DesignPicker } from "./components/DesignPicker";
 import { ResponseModePicker } from "./components/ResponseModePicker";
+import { ThemePicker } from "./components/ThemePicker";
 import {
   DESIGN_VARIANTS,
   QUICK_ACTIONS,
   RESPONSE_MODES,
   getModeByPrompt,
 } from "./lib/personalization";
+import { persistTheme, readStoredTheme, type ThemeId } from "./lib/themes";
 import type { DesignVariantId, ResponseModeId } from "./lib/types";
 
 export default function App() {
@@ -30,12 +32,21 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [selectedDesign, setSelectedDesign] = useState<DesignVariantId>("legacy");
   const [selectedMode, setSelectedMode] = useState<ResponseModeId>("normal");
+  const [theme, setTheme] = useState<ThemeId>(() => readStoredTheme());
+
+  const onThemeChange = useCallback((id: ThemeId) => {
+    setTheme(id);
+    persistTheme(id);
+  }, []);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [promptSeed, setPromptSeed] = useState(() => Math.floor(Math.random() * 10000));
+  const [webSearch, setWebSearch] = useState(false);
+  const [searchAvailable, setSearchAvailable] = useState(false);
+  const [toolStatus, setToolStatus] = useState<ToolStatusEvent | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const currentChatId = currentChat?.id ?? null;
@@ -45,10 +56,15 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const [m, c] = await Promise.all([api.listModels(), api.listChats()]);
+        const [m, c, ss] = await Promise.all([
+          api.listModels(),
+          api.listChats(),
+          api.searchStatus().catch(() => ({ enabled: false }) as SearchStatus),
+        ]);
         if (cancelled) return;
         setModels(m);
         setChats(c);
+        setSearchAvailable(ss.enabled);
         if (m.length && !selectedModel) setSelectedModel(m[0].id);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Не удалось загрузить данные");
@@ -228,6 +244,8 @@ export default function App() {
       const controller = new AbortController();
       abortRef.current = controller;
 
+      setToolStatus(null);
+
       await streamMessage(
         chatId!,
         {
@@ -235,9 +253,10 @@ export default function App() {
           model: selectedModel,
           system_prompt: selectedModeConfig.systemPrompt,
           attachments: outgoingAttachments.length ? outgoingAttachments : null,
+          web_search: webSearch || undefined,
         },
         {
-          onMeta: ({ user_message, assistant_message_id, model }) => {
+          onMeta: ({ user_message, assistant_message_id, model, variant }) => {
             setMessages((prev) =>
               prev.map((message) => {
                 if (message.id === localUserId) return user_message;
@@ -247,6 +266,7 @@ export default function App() {
                     id: assistant_message_id,
                     chat_id: chatId!,
                     model,
+                    variant: variant ?? null,
                   };
                 }
                 return message;
@@ -295,9 +315,13 @@ export default function App() {
               });
             }
           },
+          onToolStatus: (data) => {
+            setToolStatus(data);
+          },
           onError: (message) => {
             setError(message);
             setStreamingId(null);
+            setToolStatus(null);
           },
         },
         controller.signal,
@@ -314,6 +338,7 @@ export default function App() {
     } finally {
       setStreaming(false);
       setStreamingId(null);
+      setToolStatus(null);
       abortRef.current = null;
     }
   }, [
@@ -325,6 +350,7 @@ export default function App() {
     selectedModeConfig.systemPrompt,
     selectedModel,
     streaming,
+    webSearch,
   ]);
 
   const onStop = useCallback(() => {
@@ -349,19 +375,19 @@ export default function App() {
 
   return (
     <div
-      className={`design-${selectedDesign} h-full w-full overflow-hidden bg-bg text-text`}
+      className={clsx(
+        `design-${selectedDesign}`,
+        isUpdate && `theme-${theme}`,
+        "h-full w-full overflow-hidden bg-bg text-text",
+      )}
     >
       {isUpdate && (
-        <div className="pointer-events-none fixed inset-0 overflow-hidden">
-          <div className="absolute -left-32 top-12 h-96 w-96 rounded-full bg-fuchsia-400/25 blur-3xl" />
-          <div className="absolute bottom-0 right-0 h-[32rem] w-[32rem] rounded-full bg-cyan-300/25 blur-3xl" />
-        </div>
+        <div className="pointer-events-none fixed inset-0 overflow-hidden aurora-bg" />
       )}
       <div
         className={clsx(
           "relative flex h-full w-full",
-          isUpdate &&
-            "bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.75),transparent_32%),linear-gradient(135deg,#f8fafc_0%,#ede9fe_45%,#cffafe_100%)]",
+          isUpdate && "themed-app-bg",
           isZero && "font-mono",
         )}
       >
@@ -378,26 +404,29 @@ export default function App() {
         >
           <header
           className={clsx(
-            "flex items-center justify-between border-b border-border-muted",
+            "relative z-30 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border-muted",
             isUpdate
-              ? "mb-4 min-h-20 rounded-[2rem] border border-white/30 bg-white/60 px-5 py-3 shadow-[0_18px_70px_-45px_rgba(15,23,42,1)] backdrop-blur-2xl"
+              ? "themed-surface mb-4 min-h-[3.75rem] rounded-2xl border px-5 py-2.5 shadow-[0_8px_30px_-18px_rgba(15,23,42,0.35)] backdrop-blur-xl"
               : isZero
                 ? "h-auto bg-bg px-3 py-2"
-                : "h-14 bg-surface-1/50 px-4 backdrop-blur",
+                : "min-h-14 bg-surface-1/50 px-4 py-2 backdrop-blur",
           )}
           >
-            <div className="min-w-0 flex items-center gap-3">
+            <div className="flex min-w-0 max-w-full flex-1 flex-col gap-0.5 sm:max-w-[40%]">
               <div className="truncate text-sm font-medium text-text">
                 {headerTitle}
               </div>
-              {currentChat && modelById.get(headerModelId) && (
-                <span className="text-[11px] uppercase tracking-wide text-text-subtle">
-                  {modelById.get(headerModelId)!.label}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] uppercase tracking-wide text-text-subtle">
+                {currentChat && modelById.get(headerModelId) && (
+                  <span className="truncate">
+                    {modelById.get(headerModelId)!.label}
+                  </span>
+                )}
+                <span className="text-text-subtle/60">·</span>
+                <span>
+                  {selectedDesignConfig.shortLabel} · {selectedModeConfig.shortLabel}
                 </span>
-              )}
-              <span className="hidden text-[11px] uppercase tracking-wide text-text-subtle sm:inline">
-                {selectedDesignConfig.shortLabel} · {selectedModeConfig.shortLabel}
-              </span>
+              </div>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
               <ModelPicker
@@ -406,6 +435,7 @@ export default function App() {
                 onChange={onModelChange}
               />
               <DesignPicker value={selectedDesign} onChange={setSelectedDesign} />
+              {isUpdate && <ThemePicker value={theme} onChange={onThemeChange} />}
               <ResponseModePicker
                 value={selectedMode}
                 onChange={onModeChange}
@@ -427,6 +457,7 @@ export default function App() {
               streamingId={streamingId}
               error={error}
               design={selectedDesign}
+              toolStatus={toolStatus}
             />
           )}
 
@@ -443,6 +474,9 @@ export default function App() {
               onAttachmentsChange={setAttachments}
               supportsVision={supportsVision}
               onAttachmentError={setError}
+              webSearch={webSearch}
+              onWebSearchChange={setWebSearch}
+              searchAvailable={searchAvailable}
             />
           </div>
         </main>

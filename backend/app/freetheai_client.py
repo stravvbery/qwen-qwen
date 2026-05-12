@@ -1,49 +1,49 @@
-"""Thin async client for the Fireworks AI chat completion API."""
+"""Async client for the freetheai.xyz OpenAI-compatible API.
+
+Mirrors the interface of ``fireworks.py`` so that ``routes.py`` can call
+either one with the same arguments.  Adds client-side rate limiting
+(10 RPM / 1 concurrent on the free tier).
+"""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
 from .config import settings
+from .fireworks import FireworksError, StreamDelta, ToolCall
 
 
-class FireworksError(RuntimeError):
-    """Raised when Fireworks returns a non-2xx response."""
+class FreeTheAIError(FireworksError):
+    """Raised when freetheai.xyz returns a non-2xx response."""
 
 
-@dataclass(slots=True)
-class ToolCall:
-    """Accumulated tool call from streaming chunks."""
+# --- client-side throttle (10 RPM / 1 concurrent) ---------------------------
 
-    id: str = ""
-    name: str = ""
-    arguments: str = ""
+_lock = asyncio.Lock()
+_last_call_at: float = 0.0
 
 
-@dataclass(slots=True)
-class StreamDelta:
-    """A single chunk decoded from the SSE stream.
-
-    ``content`` and ``reasoning`` correspond to the standard Fireworks fields
-    ``choices[0].delta.content`` and ``choices[0].delta.reasoning_content``.
-    """
-
-    content: str = ""
-    reasoning: str = ""
-    finish_reason: str | None = None
-    tool_calls: list[ToolCall] = field(default_factory=list)
+async def _throttle() -> None:
+    global _last_call_at
+    async with _lock:
+        loop = asyncio.get_event_loop()
+        now = loop.time()
+        wait = settings.freetheai_min_interval_seconds - (now - _last_call_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _last_call_at = loop.time()
 
 
 def _auth_headers() -> dict[str, str]:
-    key = settings.fireworks_api_key
+    key = settings.freetheai_api_key
     if not key:
-        raise FireworksError(
-            "FIREWORKS_API_KEY is not set on the server. "
+        raise FreeTheAIError(
+            "FREETHEAI_API_KEY is not set on the server. "
             "Set it via environment variable or .env file."
         )
     return {
@@ -61,11 +61,9 @@ async def stream_chat(
     max_tokens: int | None = 4096,
     tools: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[StreamDelta]:
-    """Stream chat completion chunks from Fireworks.
+    """Stream chat completion chunks from freetheai.xyz."""
 
-    Yields :class:`StreamDelta` objects. Caller is responsible for accumulating
-    content/reasoning strings if needed.
-    """
+    await _throttle()
 
     payload: dict[str, object] = {
         "model": model,
@@ -78,15 +76,15 @@ async def stream_chat(
     if tools:
         payload["tools"] = tools
 
-    url = f"{settings.fireworks_base_url.rstrip('/')}/chat/completions"
+    url = f"{settings.freetheai_base_url.rstrip('/')}/chat/completions"
     timeout = httpx.Timeout(settings.request_timeout_seconds, connect=15.0)
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream("POST", url, headers=_auth_headers(), json=payload) as resp:
             if resp.status_code >= 400:
                 body = await resp.aread()
-                raise FireworksError(
-                    f"Fireworks API returned {resp.status_code}: {body.decode('utf-8', 'replace')}"
+                raise FreeTheAIError(
+                    f"FreeTheAI API returned {resp.status_code}: {body.decode('utf-8', 'replace')}"
                 )
 
             async for raw_line in resp.aiter_lines():
@@ -113,7 +111,6 @@ async def stream_chat(
                 reasoning_piece = delta.get("reasoning_content") or ""
                 finish = choice.get("finish_reason")
 
-                # Parse tool calls from delta
                 tc_list: list[ToolCall] = []
                 raw_tcs = delta.get("tool_calls") or []
                 for tc in raw_tcs:
@@ -143,7 +140,9 @@ async def chat_completion(
     max_tokens: int | None = 4096,
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Non-streaming chat completion (used for tool-call round-trips)."""
+    """Non-streaming chat completion via freetheai.xyz."""
+
+    await _throttle()
 
     payload: dict[str, object] = {
         "model": model,
@@ -156,13 +155,13 @@ async def chat_completion(
     if tools:
         payload["tools"] = tools
 
-    url = f"{settings.fireworks_base_url.rstrip('/')}/chat/completions"
+    url = f"{settings.freetheai_base_url.rstrip('/')}/chat/completions"
     timeout = httpx.Timeout(settings.request_timeout_seconds, connect=15.0)
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(url, headers=_auth_headers(), json=payload)
         if resp.status_code >= 400:
-            raise FireworksError(
-                f"Fireworks API returned {resp.status_code}: {resp.text[:500]}"
+            raise FreeTheAIError(
+                f"FreeTheAI API returned {resp.status_code}: {resp.text[:500]}"
             )
         return resp.json()

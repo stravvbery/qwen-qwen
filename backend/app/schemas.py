@@ -11,6 +11,7 @@ class ModelInfo(BaseModel):
     id: str
     label: str
     description: str
+    provider: str = "fireworks"
     context_length: int | None = None
     supports_reasoning: bool = False
     supports_vision: bool = False
@@ -25,6 +26,7 @@ class MessageOut(BaseModel):
     content: str
     reasoning: str | None = None
     model: str | None = None
+    variant: int | None = None
     attachments: list[str] | None = None
     created_at: datetime
 
@@ -64,4 +66,8 @@ class MessageCreate(BaseModel):
         default=None,
         max_length=8,
         description="Optional list of image data URLs (data:image/...;base64,...) for vision models.",
+    )
+    web_search: bool = Field(
+        default=False,
+        description="When True, force the model to search the web before answering.",
     )

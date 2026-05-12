@@ -1,8 +1,9 @@
 import clsx from "clsx";
 import { useState } from "react";
-import { Brain, ChevronDown, User, Sparkles } from "lucide-react";
+import { Brain, ChevronDown, User } from "lucide-react";
 import type { DesignVariantId, Message } from "../lib/types";
 import { Markdown } from "./Markdown";
+import { ModelAvatar } from "./ModelAvatar";
 
 interface MessageBubbleProps {
   message: Message;
@@ -38,21 +39,37 @@ export function MessageBubble({ message, isStreaming, design }: MessageBubblePro
         <div
           className={clsx(
             "flex shrink-0 items-center justify-center",
-            isUpdate
-              ? "h-11 w-11 rounded-2xl bg-white/70 text-slate-900 shadow-sm"
-              : isZero
-                ? "h-auto w-24 items-start justify-start rounded-none pt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-text-subtle"
+            isZero
+              ? "h-auto w-24 items-start justify-start rounded-none pt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-text-subtle"
+              : isUpdate
+                ? ""
                 : "h-8 w-8 rounded-full",
-            !isUpdate && !isZero && (isUser ? "bg-accent-soft text-accent" : "bg-surface-3 text-text-muted"),
+            !isUpdate &&
+              !isZero &&
+              (isUser ? "bg-accent-soft text-accent" : "bg-surface-3 text-text-muted"),
           )}
           aria-hidden
         >
           {isZero ? (
-            isUser ? "USER" : "AI"
+            isUser ? (
+              "USER"
+            ) : (
+              (message.model?.replace("accounts/fireworks/models/", "").replace("pool/", "") ?? "AI") +
+              (message.variant != null ? ` (${message.variant})` : "")
+            )
           ) : isUser ? (
-            <User className="h-4 w-4" />
+            <span
+              className={clsx(
+                "flex items-center justify-center",
+                isUpdate
+                  ? "themed-user-avatar h-11 w-11 rounded-2xl shadow-sm"
+                  : "h-8 w-8 rounded-full",
+              )}
+            >
+              <User className="h-4 w-4" />
+            </span>
           ) : (
-            <Sparkles className="h-4 w-4" />
+            <ModelAvatar modelId={message.model} size={isUpdate ? "lg" : "md"} />
           )}
         </div>
 
@@ -86,10 +103,10 @@ export function MessageBubble({ message, isStreaming, design }: MessageBubblePro
               "text-[15px] leading-relaxed",
               isUpdate
                 ? clsx(
-                    "rounded-[1.5rem] border px-5 py-4 shadow-[0_18px_60px_-34px_rgba(15,23,42,0.95)] backdrop-blur-xl",
+                    "rounded-2xl border px-5 py-4 shadow-[0_10px_40px_-22px_rgba(15,23,42,0.35)] backdrop-blur-xl transition-shadow hover:shadow-[0_14px_44px_-22px_rgba(15,23,42,0.4)]",
                     isUser
-                      ? "border-fuchsia-200/80 bg-fuchsia-500/15 text-text"
-                      : "border-white/50 bg-white/65 text-text",
+                      ? "themed-user-bubble text-text"
+                      : "border-white/70 bg-white/80 text-text [.theme-midnight_&]:border-white/10 [.theme-midnight_&]:bg-white/[0.04]",
                   )
                 : isZero
                   ? "border-l border-border-muted px-4 py-1 font-mono text-sm"
@@ -153,7 +170,12 @@ export function MessageBubble({ message, isStreaming, design }: MessageBubblePro
                 isZero && "font-mono uppercase tracking-[0.18em]",
               )}
             >
-              {message.model.replace("accounts/fireworks/models/", "")}
+              {message.model.replace("accounts/fireworks/models/", "").replace("pool/", "")}
+              {message.variant != null && (
+                <span className="ml-1 text-accent font-semibold">
+                  ({message.variant})
+                </span>
+              )}
             </div>
           )}
         </div>

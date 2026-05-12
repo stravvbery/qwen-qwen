@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { useEffect, useRef } from "react";
-import { Image as ImageIcon, Paperclip, Send, StopCircle, X } from "lucide-react";
+import { Globe, Image as ImageIcon, Paperclip, Send, StopCircle, X } from "lucide-react";
 import type { DesignVariantId } from "../lib/types";
 import type { QuickAction } from "../lib/personalization";
 
@@ -17,6 +17,9 @@ interface ComposerProps {
   onAttachmentsChange: (next: string[]) => void;
   supportsVision: boolean;
   onAttachmentError?: (message: string) => void;
+  webSearch: boolean;
+  onWebSearchChange: (v: boolean) => void;
+  searchAvailable: boolean;
 }
 
 const ACCEPTED_TYPES = "image/png,image/jpeg,image/webp,image/gif";
@@ -52,6 +55,9 @@ export function Composer({
   onAttachmentsChange,
   supportsVision,
   onAttachmentError,
+  webSearch,
+  onWebSearchChange,
+  searchAvailable,
 }: ComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -185,7 +191,7 @@ export function Composer({
         className={clsx(
           "mx-auto flex items-end gap-2 border transition-colors duration-150",
           isUpdate
-            ? "max-w-5xl rounded-[1.75rem] border-white/40 bg-white/70 p-3 shadow-[0_24px_80px_-36px_rgba(15,23,42,0.95)] backdrop-blur-2xl focus-within:border-fuchsia-300"
+            ? "themed-surface-strong max-w-5xl rounded-2xl p-3 shadow-[0_10px_40px_-22px_rgba(15,23,42,0.35)] backdrop-blur-xl focus-within:border-[color:var(--accent)] focus-within:shadow-[0_14px_44px_-22px_rgba(79,70,229,0.35)]"
             : isZero
               ? "max-w-4xl rounded-none border-border bg-bg p-1 focus-within:border-text"
               : "max-w-3xl rounded-xl border-border bg-surface-2 p-2 shadow-raised focus-within:border-accent",
@@ -202,6 +208,25 @@ export function Composer({
             e.target.value = "";
           }}
         />
+        {searchAvailable && (
+          <button
+            type="button"
+            onClick={() => onWebSearchChange(!webSearch)}
+            aria-label={webSearch ? "Отключить веб-поиск" : "Включить веб-поиск"}
+            title={webSearch ? "Веб-поиск включён (нажмите, чтобы выключить)" : "Искать в интернете"}
+            className={clsx(
+              "inline-flex h-10 w-10 shrink-0 items-center justify-center transition-colors",
+              isUpdate ? "rounded-2xl" : isZero ? "rounded-none" : "rounded-lg",
+              webSearch
+                ? isZero
+                  ? "border border-text bg-text text-bg"
+                  : "border border-accent bg-accent/15 text-accent"
+                : "border border-transparent text-text-muted hover:bg-surface-3 hover:text-text",
+            )}
+          >
+            <Globe className="h-4 w-4" />
+          </button>
+        )}
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}

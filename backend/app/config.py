@@ -33,6 +33,21 @@ class Settings(BaseSettings):
 
     request_timeout_seconds: float = Field(default=120.0, alias="REQUEST_TIMEOUT_SECONDS")
 
+    # --- freetheai.xyz provider ---
+    freetheai_api_key: str = Field(default="", alias="FREETHEAI_API_KEY")
+    freetheai_base_url: str = Field(
+        default="https://api.freetheai.xyz/v1",
+        alias="FREETHEAI_BASE_URL",
+    )
+    freetheai_min_interval_seconds: float = Field(
+        default=6.5, alias="FREETHEAI_MIN_INTERVAL_SECONDS",
+    )
+
+    # --- web-search providers ---
+    tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
+    serper_api_key: str = Field(default="", alias="SERPER_API_KEY")
+    firecrawl_api_key: str = Field(default="", alias="FIRECRAWL_API_KEY")
+
     def resolve_database_url(self) -> str:
         """Return a SQLAlchemy async URL, defaulting to a SQLite file in ``data_dir``."""
 

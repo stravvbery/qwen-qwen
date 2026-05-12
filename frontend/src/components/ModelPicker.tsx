@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Sparkles } from "lucide-react";
 import clsx from "clsx";
 import type { ModelInfo } from "../lib/types";
+import { ModelAvatar } from "./ModelAvatar";
 
 interface ModelPickerProps {
   models: ModelInfo[];
@@ -37,12 +38,12 @@ export function ModelPicker({ models, value, onChange }: ModelPickerProps) {
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={clsx(
-          "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold",
+          "inline-flex items-center gap-2 rounded-full border py-1 pl-1 pr-3 text-xs font-semibold",
           "border-accent bg-accent-soft text-accent hover:border-accent-hover hover:text-accent-hover",
           "transition-colors duration-150",
         )}
       >
-        <Sparkles className="h-3.5 w-3.5" />
+        <ModelAvatar modelId={selected.id} size="sm" />
         <span className="text-text-subtle">Модель</span>
         <span className="font-medium">{selected.label}</span>
         <ChevronDown
@@ -52,7 +53,7 @@ export function ModelPicker({ models, value, onChange }: ModelPickerProps) {
       {open && (
         <div
           role="listbox"
-          className="absolute right-0 mt-2 w-72 z-30 rounded-lg border border-border bg-surface-1 shadow-floating animate-fadein overflow-hidden"
+          className="themed-surface-solid absolute right-0 mt-2 w-72 z-30 rounded-xl border border-border bg-surface-1 shadow-floating animate-fadein overflow-hidden"
         >
           {models.map((m) => {
             const isActive = m.id === value;
@@ -67,10 +68,11 @@ export function ModelPicker({ models, value, onChange }: ModelPickerProps) {
                   setOpen(false);
                 }}
                 className={clsx(
-                  "w-full text-left px-3 py-2.5 flex items-start gap-2 transition-colors",
+                  "w-full text-left px-3 py-2.5 flex items-start gap-3 transition-colors",
                   isActive ? "bg-surface-3" : "hover:bg-surface-3",
                 )}
               >
+                <ModelAvatar modelId={m.id} size="md" />
                 <Check
                   className={clsx(
                     "w-4 h-4 mt-0.5 shrink-0",
@@ -78,7 +80,14 @@ export function ModelPicker({ models, value, onChange }: ModelPickerProps) {
                   )}
                 />
                 <div className="min-w-0">
-                  <div className="text-sm font-medium text-text">{m.label}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm font-medium text-text">{m.label}</span>
+                    {m.provider === "freetheai" && (
+                      <span className="shrink-0 rounded bg-accent-soft px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-accent">
+                        FTA
+                      </span>
+                    )}
+                  </div>
                   <div className="text-xs text-text-muted mt-0.5">{m.description}</div>
                   {m.context_length ? (
                     <div className="text-[10px] uppercase tracking-wide text-text-subtle mt-1">

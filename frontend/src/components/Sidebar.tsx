@@ -36,7 +36,7 @@ export function Sidebar({
       className={clsx(
         "flex shrink-0 flex-col",
         isUpdate
-          ? "m-4 mr-0 h-[calc(100%-2rem)] w-80 rounded-[2rem] border border-white/20 bg-white/60 shadow-[0_24px_80px_-40px_rgba(15,23,42,0.8)] backdrop-blur-2xl"
+          ? "themed-surface m-4 mr-0 h-[calc(100%-2rem)] w-72 rounded-2xl border shadow-[0_10px_40px_-22px_rgba(15,23,42,0.35)] backdrop-blur-xl"
           : isZero
             ? "h-full w-64 border-r border-border-muted bg-bg font-mono"
             : "h-full w-72 border-r border-border-muted bg-surface-1",
@@ -54,7 +54,7 @@ export function Sidebar({
           className={clsx(
             "inline-flex w-full items-center justify-center gap-2 font-medium transition-colors duration-150",
             isUpdate
-              ? "rounded-2xl bg-slate-950 px-4 py-3 text-sm text-white shadow-[0_16px_40px_-20px_rgba(15,23,42,0.9)] hover:bg-fuchsia-600"
+              ? "themed-accent-bg rounded-xl px-4 py-2.5 text-sm text-white shadow-[0_8px_24px_-14px_rgba(79,70,229,0.55)] transition-[filter] hover:brightness-110"
               : isZero
                 ? "rounded-none border border-border px-2 py-2 text-xs uppercase tracking-[0.2em] text-text hover:bg-surface-2"
                 : "rounded-md bg-accent px-3 py-2 text-sm text-white shadow-raised hover:bg-accent-hover",
@@ -88,10 +88,10 @@ export function Sidebar({
                           : "rounded-md px-3 py-2",
                       isActive
                         ? isUpdate
-                          ? "bg-slate-950 text-white shadow-[0_16px_40px_-24px_rgba(15,23,42,1)]"
+                          ? "themed-accent-bg-soft text-white shadow-[0_8px_24px_-16px_rgba(15,23,42,0.45)]"
                           : "bg-surface-3"
                         : isUpdate
-                          ? "hover:bg-white/70"
+                          ? "hover:bg-white/85"
                           : "hover:bg-surface-3",
                     )}
                     onClick={() => onSelect(chat.id)}

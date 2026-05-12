@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -13,8 +14,12 @@ from sqlalchemy.orm import selectinload
 
 from . import schemas
 from .db import get_session
-from .fireworks import FireworksError, StreamDelta, stream_chat
+from .fireworks import FireworksError, StreamDelta, ToolCall
+from .fireworks import stream_chat as fireworks_stream_chat
+from .freetheai_client import FreeTheAIError
+from .freetheai_client import stream_chat as freetheai_stream_chat
 from .models import Chat, Message
+from .web_tools import TOOL_DEFINITIONS, execute_tool_call, has_any_provider
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -24,10 +29,12 @@ router = APIRouter(prefix="/api", tags=["chat"])
 # Curated list — only the models the user picked. Kept server-side so the
 # browser cannot point the proxy at arbitrary models with the same API key.
 MODELS: list[schemas.ModelInfo] = [
+    # --- Fireworks models ---
     schemas.ModelInfo(
         id="accounts/fireworks/models/deepseek-v4-pro",
         label="DeepSeek V4 Pro",
         description="Сильная reasoning-модель с контекстом 1M токенов.",
+        provider="fireworks",
         context_length=1_048_576,
         supports_reasoning=True,
     ),
@@ -35,6 +42,7 @@ MODELS: list[schemas.ModelInfo] = [
         id="accounts/fireworks/models/kimi-k2p6",
         label="Kimi K2.6",
         description="Универсальная мультимодальная модель: текст + изображения, инструменты.",
+        provider="fireworks",
         context_length=262_144,
         supports_reasoning=True,
         supports_vision=True,
@@ -43,6 +51,7 @@ MODELS: list[schemas.ModelInfo] = [
         id="accounts/fireworks/models/qwen3p6-plus",
         label="Qwen3.6 Plus",
         description="Qwen 3.6 Plus — быстрая мультимодальная модель общего назначения.",
+        provider="fireworks",
         context_length=None,
         supports_reasoning=True,
         supports_vision=True,
@@ -51,6 +60,7 @@ MODELS: list[schemas.ModelInfo] = [
         id="accounts/fireworks/models/minimax-m2p7",
         label="MiniMax M2.7",
         description="MiniMax M2.7 — мощный generalist.",
+        provider="fireworks",
         context_length=196_608,
         supports_reasoning=False,
     ),
@@ -58,13 +68,55 @@ MODELS: list[schemas.ModelInfo] = [
         id="accounts/fireworks/models/glm-5p1",
         label="GLM 5.1",
         description="GLM 5.1 — новый generalist от Zhipu.",
+        provider="fireworks",
         context_length=None,
+        supports_reasoning=True,
+    ),
+    # --- FreeTheAI models ---
+    schemas.ModelInfo(
+        id="cat/claude-opus-4-7",
+        label="Claude Opus 4.7",
+        description="Anthropic Claude Opus 4.7 (FreeTheAI).",
+        provider="freetheai",
+        supports_reasoning=True,
+    ),
+    schemas.ModelInfo(
+        id="cat/gpt-5.5",
+        label="GPT-5.5",
+        description="OpenAI GPT-5.5 (FreeTheAI).",
+        provider="freetheai",
+        supports_reasoning=True,
+    ),
+    schemas.ModelInfo(
+        id="pool/gemini-3-1-pro",
+        label="Gemini 3.1 Pro",
+        description="Google Gemini 3.1 Pro — рандомно через 3 провайдера (FreeTheAI).",
+        provider="freetheai",
         supports_reasoning=True,
     ),
 ]
 
 _MODEL_IDS = {m.id for m in MODELS}
 _MODELS_BY_ID = {m.id: m for m in MODELS}
+
+# Gemini 3.1 Pro pool: three backends chosen at random per request.
+_GEMINI_POOL = [
+    ("cat/gemini-3-1-pro", 1),
+    ("fth/reedmayhew/gemini-3.1-pro-distill-reasoning-12B-QKVO-HF", 2),
+    ("yng/gemini-3-1-pro", 3),
+]
+
+
+def _resolve_model(model_id: str) -> tuple[str, int | None]:
+    """Return (actual_model_id, variant) — variant is set only for pool models."""
+    if model_id == "pool/gemini-3-1-pro":
+        actual, variant = random.choice(_GEMINI_POOL)
+        return actual, variant
+    return model_id, None
+
+
+def _is_freetheai(model_id: str) -> bool:
+    return model_id.startswith(("cat/", "fth/", "yng/", "rev/", "glm/", "img/", "vhr/"))
 
 
 def _ensure_model(model_id: str) -> None:
@@ -125,6 +177,21 @@ async def health() -> dict[str, str]:
 @router.get("/models", response_model=list[schemas.ModelInfo])
 async def list_models() -> list[schemas.ModelInfo]:
     return MODELS
+
+
+@router.get("/search/status")
+async def search_status() -> dict[str, object]:
+    """Return which search providers are configured."""
+    from .config import settings
+
+    return {
+        "enabled": has_any_provider(),
+        "providers": {
+            "tavily": bool(settings.tavily_api_key),
+            "serper": bool(settings.serper_api_key),
+            "firecrawl": bool(settings.firecrawl_api_key),
+        },
+    }
 
 
 @router.get("/chats", response_model=list[schemas.ChatOut])
@@ -248,6 +315,9 @@ async def post_message(
     model_id = payload.model or chat.model
     _ensure_model(model_id)
 
+    # Resolve pool models (e.g. Gemini 3.1 pool -> random backend).
+    actual_model_id, variant = _resolve_model(model_id)
+
     attachments = _validate_attachments(model_id, payload.attachments)
 
     if not payload.content.strip() and not attachments:
@@ -276,7 +346,7 @@ async def post_message(
     )
     history = list(result.scalars())
 
-    assistant_msg = Message(chat_id=chat.id, role="assistant", content="", model=model_id)
+    assistant_msg = Message(chat_id=chat.id, role="assistant", content="", model=model_id, variant=variant)
     db.add(assistant_msg)
     await db.flush()
 
@@ -302,50 +372,135 @@ async def post_message(
 
     await db.commit()
 
+    use_tools = payload.web_search or has_any_provider()
+    tools = TOOL_DEFINITIONS if use_tools else None
+    force_search = payload.web_search
+
     async def event_stream() -> AsyncIterator[str]:
-        # Use a fresh session inside the streaming generator — the dependency-
-        # provided session is closed once this function returns.
         from .db import SessionLocal
 
         content_buf: list[str] = []
         reasoning_buf: list[str] = []
         finish_reason: str | None = None
+        current_messages = list(fw_messages)
 
-        yield _sse(
-            "meta",
-            {
-                "user_message": {
-                    "id": user_msg_id,
-                    "chat_id": chat_id_val,
-                    "role": "user",
-                    "content": payload.content,
-                    "attachments": attachments,
-                    "created_at": user_created.isoformat(),
-                    "model": model_id,
-                },
-                "assistant_message_id": assistant_msg_id,
+        if force_search:
+            current_messages.append({
+                "role": "system",
+                "content": (
+                    "The user has requested a web search. You MUST use the "
+                    "web_search tool to find current information before answering. "
+                    "Do not answer from memory alone."
+                ),
+            })
+
+        meta_payload: dict[str, object] = {
+            "user_message": {
+                "id": user_msg_id,
+                "chat_id": chat_id_val,
+                "role": "user",
+                "content": payload.content,
+                "attachments": attachments,
+                "created_at": user_created.isoformat(),
                 "model": model_id,
             },
-        )
+            "assistant_message_id": assistant_msg_id,
+            "model": model_id,
+        }
+        if variant is not None:
+            meta_payload["variant"] = variant
+        yield _sse("meta", meta_payload)
+
+        max_tool_rounds = 5
 
         try:
-            async for delta in stream_chat(model=model_id, messages=fw_messages):
-                assert isinstance(delta, StreamDelta)
-                if delta.content:
-                    content_buf.append(delta.content)
-                if delta.reasoning:
-                    reasoning_buf.append(delta.reasoning)
-                if delta.finish_reason:
-                    finish_reason = delta.finish_reason
-                if delta.content or delta.reasoning:
-                    yield _sse(
-                        "delta",
+            for _round in range(max_tool_rounds + 1):
+                pending_tool_calls: dict[int, ToolCall] = {}
+
+                _do_stream = (
+                    freetheai_stream_chat
+                    if _is_freetheai(actual_model_id)
+                    else fireworks_stream_chat
+                )
+                async for delta in _do_stream(
+                    model=actual_model_id,
+                    messages=current_messages,
+                    tools=tools,
+                ):
+                    assert isinstance(delta, StreamDelta)
+                    if delta.content:
+                        content_buf.append(delta.content)
+                    if delta.reasoning:
+                        reasoning_buf.append(delta.reasoning)
+                    if delta.finish_reason:
+                        finish_reason = delta.finish_reason
+                    if delta.content or delta.reasoning:
+                        yield _sse(
+                            "delta",
+                            {
+                                "content": delta.content,
+                                "reasoning": delta.reasoning,
+                            },
+                        )
+
+                    for tc in delta.tool_calls:
+                        idx = len(pending_tool_calls)
+                        if tc.id:
+                            pending_tool_calls[idx] = ToolCall(
+                                id=tc.id, name=tc.name, arguments=tc.arguments
+                            )
+                        elif pending_tool_calls:
+                            last_idx = max(pending_tool_calls)
+                            pending_tool_calls[last_idx].arguments += tc.arguments
+
+                if not pending_tool_calls:
+                    break
+
+                assistant_tc_msg: dict[str, object] = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
                         {
-                            "content": delta.content,
-                            "reasoning": delta.reasoning,
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": tc.arguments,
+                            },
+                        }
+                        for tc in pending_tool_calls.values()
+                    ],
+                }
+                current_messages.append(assistant_tc_msg)
+
+                for tc in pending_tool_calls.values():
+                    yield _sse(
+                        "tool_status",
+                        {"tool": tc.name, "status": "running", "arguments": tc.arguments},
+                    )
+
+                    result = await execute_tool_call(tc.name, tc.arguments)
+
+                    yield _sse(
+                        "tool_status",
+                        {
+                            "tool": tc.name,
+                            "status": "done",
+                            "result_preview": result[:300] if result else "",
                         },
                     )
-        except FireworksError as exc:
+
+                    current_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result,
+                    })
+
+                content_buf.clear()
+                reasoning_buf.clear()
+                finish_reason = None
+
+        except (FireworksError, FreeTheAIError) as exc:
             async with SessionLocal() as session:
                 msg = await session.get(Message, assistant_msg_id)
                 if msg is not None:
@@ -390,6 +545,7 @@ async def post_message(
                     "content": final_content,
                     "reasoning": final_reasoning,
                     "model": model_id,
+                    "variant": variant,
                     "created_at": assistant_created.isoformat(),
                 },
             },

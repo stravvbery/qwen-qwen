@@ -24,21 +24,207 @@
 }
 
 .design-update2 {
-  --bg: #f8fafc;
-  --surface-1: rgba(255, 255, 255, 0.72);
-  --surface-2: rgba(255, 255, 255, 0.66);
-  --surface-3: rgba(255, 255, 255, 0.88);
-  --border: rgba(148, 163, 184, 0.45);
-  --border-muted: rgba(148, 163, 184, 0.25);
-  --text: #0f172a;
-  --text-muted: #475569;
-  --text-subtle: #94a3b8;
-  --accent: #d946ef;
-  --accent-hover: #c026d3;
-  --accent-soft: rgba(217, 70, 239, 0.14);
-  --success: #059669;
+  --bg: #f4f4fb;
+  --surface-1: rgba(255, 255, 255, 0.78);
+  --surface-2: rgba(255, 255, 255, 0.72);
+  --surface-3: rgba(255, 255, 255, 0.92);
+  --border: rgba(99, 102, 241, 0.22);
+  --border-muted: rgba(148, 163, 184, 0.22);
+  --text: #0b1020;
+  --text-muted: #4b5675;
+  --text-subtle: #8b93ad;
+  --accent: #6d4dff;
+  --accent-hover: #5b3aff;
+  --accent-soft: rgba(109, 77, 255, 0.12);
+  --success: #0f9d6b;
   --warning: #d97706;
   --danger: #e11d48;
+
+  /* Theme-scoped tokens. Default = Aurora. Other themes override below. */
+  --aurora-1: #c4b5fd;
+  --aurora-2: #67e8f9;
+  --app-bg-gradient:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.6), transparent 30%),
+    linear-gradient(135deg, #f4f4fb 0%, #ece9ff 55%, #dff1ff 100%);
+  --accent-gradient: linear-gradient(135deg, #6366f1, #8b5cf6);
+  --accent-gradient-soft: linear-gradient(135deg, rgba(99, 102, 241, 0.95), rgba(139, 92, 246, 0.95));
+  --user-bubble-gradient: linear-gradient(135deg, #eef2ff, #ffffff 50%, #f5f3ff);
+  --user-bubble-border: rgba(165, 180, 252, 0.7);
+  --user-avatar-bg: rgba(255, 255, 255, 0.85);
+  --user-avatar-text: #0f172a;
+  --code-inline-bg: rgba(99, 102, 241, 0.08);
+  --code-inline-text: #1e1b4b;
+}
+
+.design-update2.theme-forest {
+  --accent: #0f9d6b;
+  --accent-hover: #0c8159;
+  --accent-soft: rgba(15, 157, 107, 0.12);
+  --border: rgba(20, 184, 166, 0.22);
+  --aurora-1: #a7f3d0;
+  --aurora-2: #5eead4;
+  --app-bg-gradient:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.6), transparent 30%),
+    linear-gradient(135deg, #f0fdfa 0%, #ccfbf1 55%, #d1fae5 100%);
+  --accent-gradient: linear-gradient(135deg, #10b981, #14b8a6);
+  --accent-gradient-soft: linear-gradient(135deg, rgba(16, 185, 129, 0.95), rgba(20, 184, 166, 0.95));
+  --user-bubble-gradient: linear-gradient(135deg, #ecfdf5, #ffffff 50%, #f0fdfa);
+  --user-bubble-border: rgba(110, 231, 183, 0.7);
+  --code-inline-bg: rgba(16, 185, 129, 0.1);
+  --code-inline-text: #064e3b;
+}
+
+.design-update2.theme-sunset {
+  --accent: #ea580c;
+  --accent-hover: #c2410c;
+  --accent-soft: rgba(234, 88, 12, 0.12);
+  --border: rgba(249, 115, 22, 0.22);
+  --aurora-1: #fed7aa;
+  --aurora-2: #fda4af;
+  --app-bg-gradient:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.6), transparent 30%),
+    linear-gradient(135deg, #fff7ed 0%, #ffedd5 55%, #fff1f2 100%);
+  --accent-gradient: linear-gradient(135deg, #f97316, #e11d48);
+  --accent-gradient-soft: linear-gradient(135deg, rgba(249, 115, 22, 0.95), rgba(225, 29, 72, 0.95));
+  --user-bubble-gradient: linear-gradient(135deg, #fff7ed, #ffffff 50%, #fff1f2);
+  --user-bubble-border: rgba(253, 186, 116, 0.7);
+  --code-inline-bg: rgba(249, 115, 22, 0.1);
+  --code-inline-text: #7c2d12;
+}
+
+.design-update2.theme-midnight {
+  --bg: #0b1020;
+  --surface-1: rgba(255, 255, 255, 0.05);
+  --surface-2: rgba(255, 255, 255, 0.04);
+  --surface-3: rgba(255, 255, 255, 0.08);
+  --border: rgba(129, 140, 248, 0.3);
+  --border-muted: rgba(148, 163, 184, 0.12);
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --text-subtle: #64748b;
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
+  --accent-soft: rgba(129, 140, 248, 0.18);
+  --aurora-1: #4338ca;
+  --aurora-2: #0e7490;
+  --app-bg-gradient:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.05), transparent 30%),
+    linear-gradient(135deg, #0b1020 0%, #1e1b4b 55%, #082f49 100%);
+  --accent-gradient: linear-gradient(135deg, #6366f1, #8b5cf6);
+  --accent-gradient-soft: linear-gradient(135deg, rgba(99, 102, 241, 0.85), rgba(139, 92, 246, 0.85));
+  --user-bubble-gradient: linear-gradient(135deg, rgba(99, 102, 241, 0.22), rgba(15, 23, 42, 0.7) 50%, rgba(139, 92, 246, 0.22));
+  --user-bubble-border: rgba(129, 140, 248, 0.45);
+  --user-avatar-bg: rgba(255, 255, 255, 0.08);
+  --user-avatar-text: #e2e8f0;
+  --code-inline-bg: rgba(129, 140, 248, 0.18);
+  --code-inline-text: #c7d2fe;
+}
+
+.design-update2.theme-mono {
+  --accent: #475569;
+  --accent-hover: #334155;
+  --accent-soft: rgba(71, 85, 105, 0.12);
+  --border: rgba(71, 85, 105, 0.22);
+  --border-muted: rgba(148, 163, 184, 0.22);
+  --aurora-1: #cbd5e1;
+  --aurora-2: #e2e8f0;
+  --app-bg-gradient:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.6), transparent 30%),
+    linear-gradient(135deg, #f8fafc 0%, #f1f5f9 55%, #e2e8f0 100%);
+  --accent-gradient: linear-gradient(135deg, #475569, #64748b);
+  --accent-gradient-soft: linear-gradient(135deg, rgba(71, 85, 105, 0.95), rgba(100, 116, 139, 0.95));
+  --user-bubble-gradient: linear-gradient(135deg, #f1f5f9, #ffffff 50%, #e2e8f0);
+  --user-bubble-border: rgba(148, 163, 184, 0.6);
+  --code-inline-bg: rgba(71, 85, 105, 0.1);
+  --code-inline-text: #1e293b;
+}
+
+/* Themed helper classes. Apply these on JSX to consume the theme tokens. */
+.design-update2 .themed-app-bg {
+  background-image: var(--app-bg-gradient);
+}
+.design-update2 .themed-accent-bg {
+  background-image: var(--accent-gradient);
+}
+.design-update2 .themed-accent-bg-soft {
+  background-image: var(--accent-gradient-soft);
+}
+.design-update2 .themed-user-bubble {
+  background-image: var(--user-bubble-gradient);
+  border-color: var(--user-bubble-border);
+}
+.design-update2 .themed-user-avatar {
+  background-color: var(--user-avatar-bg);
+  color: var(--user-avatar-text);
+}
+
+/* Glass surfaces. Default = white translucent. Midnight = dark translucent. */
+.design-update2 .themed-surface {
+  background-color: rgba(255, 255, 255, 0.75);
+  border-color: rgba(255, 255, 255, 0.6);
+}
+.design-update2 .themed-surface-strong {
+  background-color: rgba(255, 255, 255, 0.85);
+  border-color: rgba(255, 255, 255, 0.7);
+}
+.design-update2 .themed-surface-solid {
+  background-color: #ffffff;
+  border-color: rgba(148, 163, 184, 0.4);
+}
+
+.design-update2.theme-midnight .themed-surface {
+  background-color: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.design-update2.theme-midnight .themed-surface-strong {
+  background-color: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.design-update2.theme-midnight .themed-surface-solid {
+  background-color: #0f172a;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+/* Refined modern 2.0 surface: subtle aurora background, crisp glass panels. */
+.design-update2 {
+  background-color: var(--bg);
+}
+
+.design-update2 .glass-card {
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset,
+    0 10px 40px -22px rgba(15, 23, 42, 0.35);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+}
+
+.design-update2 .aurora-bg::before,
+.design-update2 .aurora-bg::after {
+  content: "";
+  position: absolute;
+  inset: auto;
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(80px);
+  opacity: 0.55;
+  border-radius: 9999px;
+}
+
+.design-update2 .aurora-bg::before {
+  width: 36rem;
+  height: 36rem;
+  top: -8rem;
+  left: -6rem;
+  background: radial-gradient(circle at center, var(--aurora-1) 0%, rgba(0, 0, 0, 0) 70%);
+}
+
+.design-update2 .aurora-bg::after {
+  width: 32rem;
+  height: 32rem;
+  bottom: -10rem;
+  right: -6rem;
+  background: radial-gradient(circle at center, var(--aurora-2) 0%, rgba(0, 0, 0, 0) 70%);
 }
 
 .design-zeroSugar {
@@ -77,6 +263,11 @@ body {
 .design-update2 .prose-chat pre {
   background: rgba(15, 23, 42, 0.94);
   border-color: rgba(255, 255, 255, 0.12);
+}
+
+.design-update2 .prose-chat code {
+  background: var(--code-inline-bg);
+  color: var(--code-inline-text);
 }
 
 .design-zeroSugar .prose-chat {

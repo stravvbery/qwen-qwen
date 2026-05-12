@@ -2,6 +2,7 @@ export interface ModelInfo {
   id: string;
   label: string;
   description: string;
+  provider: "fireworks" | "freetheai";
   context_length: number | null;
   supports_reasoning: boolean;
   supports_vision: boolean;
@@ -16,6 +17,8 @@ export interface Message {
   model?: string | null;
   attachments?: string[] | null;
   created_at: string;
+  /** Gemini 3.1 pool variant (1|2|3), only set client-side. */
+  variant?: number | null;
 }
 
 export interface Chat {
