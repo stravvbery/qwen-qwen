@@ -35,9 +35,9 @@ export function EmptyState({ onPick, design, mode, promptSeed }: EmptyStateProps
 
   if (design === "update2") {
     return (
-      <div className="flex-1 overflow-y-auto px-4 py-8">
+      <div className="flex-1 overflow-y-auto px-3 py-6 sm:px-4 sm:py-8">
         <div className="mx-auto grid max-w-6xl gap-5 lg:grid-cols-[1.1fr_0.9fr]">
-          <section className="themed-surface relative overflow-hidden rounded-3xl border p-8 shadow-[0_20px_60px_-30px_rgba(15,23,42,0.35)] backdrop-blur-xl">
+          <section className="themed-surface relative overflow-hidden rounded-2xl sm:rounded-3xl border p-5 sm:p-8 shadow-[0_20px_60px_-30px_rgba(15,23,42,0.35)] backdrop-blur-xl">
             <div
               className="absolute -right-24 -top-24 h-64 w-64 rounded-full blur-3xl opacity-50"
               style={{ backgroundColor: "var(--aurora-1)" }}
@@ -51,7 +51,7 @@ export function EmptyState({ onPick, design, mode, promptSeed }: EmptyStateProps
                 <Rocket className="h-3.5 w-3.5" />
                 Update 2.0
               </div>
-              <h1 className="max-w-2xl text-4xl font-semibold leading-[1.05] tracking-[-0.025em] text-text sm:text-5xl">
+              <h1 className="max-w-2xl text-2xl font-semibold leading-[1.05] tracking-[-0.025em] text-text sm:text-4xl lg:text-5xl">
                 Чистый чат — без визуального шума,
                 <span
                   className="bg-clip-text text-transparent"
@@ -65,7 +65,7 @@ export function EmptyState({ onPick, design, mode, promptSeed }: EmptyStateProps
                 действия собраны в одно место. Без лишних блёсток, только
                 осмысленные детали.
               </p>
-              <div className="mt-7 grid gap-3 sm:grid-cols-3">
+              <div className="mt-5 sm:mt-7 grid gap-3 grid-cols-3">
                 {[
                   ["Дизайн", activeDesign.label],
                   ["Режим", activeMode.label],
