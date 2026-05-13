@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Menu } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import clsx from "clsx";
 import { api, streamMessage, type SearchStatus, type ToolStatusEvent } from "./lib/api";
@@ -46,6 +47,7 @@ export default function App() {
   const [promptSeed, setPromptSeed] = useState(() => Math.floor(Math.random() * 10000));
   const [webSearch, setWebSearch] = useState(false);
   const [searchAvailable, setSearchAvailable] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toolStatus, setToolStatus] = useState<ToolStatusEvent | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -394,25 +396,36 @@ export default function App() {
         <Sidebar
           chats={chats}
           activeId={activeId}
-          onSelect={onSelectChat}
-          onNew={onNewChat}
+          onSelect={(id) => { onSelectChat(id); setSidebarOpen(false); }}
+          onNew={() => { onNewChat(); setSidebarOpen(false); }}
           onDelete={onDeleteChat}
           design={selectedDesign}
+          mobileOpen={sidebarOpen}
+          onMobileClose={() => setSidebarOpen(false)}
         />
         <main
-          className={clsx("flex h-full min-h-0 min-w-0 flex-1 flex-col", isUpdate && "p-4")}
+          className={clsx("flex h-full min-h-0 min-w-0 flex-1 flex-col", isUpdate && "p-2 sm:p-4")}
         >
           <header
           className={clsx(
-            "relative z-30 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border-muted",
+            "relative z-30 flex flex-wrap items-center justify-between gap-x-2 gap-y-2 border-b border-border-muted sm:gap-x-4",
             isUpdate
-              ? "themed-surface mb-4 min-h-[3.75rem] rounded-2xl border px-5 py-2.5 shadow-[0_8px_30px_-18px_rgba(15,23,42,0.35)] backdrop-blur-xl"
+              ? "themed-surface mb-2 sm:mb-4 min-h-[3.25rem] sm:min-h-[3.75rem] rounded-xl sm:rounded-2xl border px-3 sm:px-5 py-2 sm:py-2.5 shadow-[0_8px_30px_-18px_rgba(15,23,42,0.35)] backdrop-blur-xl"
               : isZero
                 ? "h-auto bg-bg px-3 py-2"
-                : "min-h-14 bg-surface-1/50 px-4 py-2 backdrop-blur",
+                : "min-h-12 sm:min-h-14 bg-surface-1/50 px-3 sm:px-4 py-2 backdrop-blur",
           )}
           >
-            <div className="flex min-w-0 max-w-full flex-1 flex-col gap-0.5 sm:max-w-[40%]">
+            <div className="flex min-w-0 max-w-full flex-1 items-center gap-2 sm:max-w-[40%]">
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(true)}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-muted hover:bg-surface-3 hover:text-text transition-colors md:hidden"
+                aria-label="Открыть меню"
+              >
+                <Menu className="h-5 w-5" />
+              </button>
+              <div className="min-w-0 flex-1 flex flex-col gap-0.5">
               <div className="truncate text-sm font-medium text-text">
                 {headerTitle}
               </div>
@@ -422,20 +435,23 @@ export default function App() {
                     {modelById.get(headerModelId)!.label}
                   </span>
                 )}
-                <span className="text-text-subtle/60">·</span>
-                <span>
+                <span className="text-text-subtle/60 hidden sm:inline">·</span>
+                <span className="hidden sm:inline">
                   {selectedDesignConfig.shortLabel} · {selectedModeConfig.shortLabel}
                 </span>
               </div>
+              </div>
             </div>
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-1 sm:gap-2">
               <ModelPicker
                 models={models}
                 value={selectedModel}
                 onChange={onModelChange}
               />
+              <div className="hidden sm:contents">
               <DesignPicker value={selectedDesign} onChange={setSelectedDesign} />
               {isUpdate && <ThemePicker value={theme} onChange={onThemeChange} />}
+              </div>
               <ResponseModePicker
                 value={selectedMode}
                 onChange={onModeChange}

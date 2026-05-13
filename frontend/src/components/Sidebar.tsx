@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { MessageSquarePlus, Trash2, MessageCircle } from "lucide-react";
+import { MessageSquarePlus, Trash2, MessageCircle, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Chat, DesignVariantId } from "../lib/types";
 import { formatRelative } from "../lib/format";
@@ -11,6 +11,8 @@ interface SidebarProps {
   onNew: () => void;
   onDelete: (id: string) => void;
   design: DesignVariantId;
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
 }
 
 export function Sidebar({
@@ -20,6 +22,8 @@ export function Sidebar({
   onNew,
   onDelete,
   design,
+  mobileOpen = false,
+  onMobileClose,
 }: SidebarProps) {
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const isUpdate = design === "update2";
@@ -32,27 +36,45 @@ export function Sidebar({
   }, [confirmId]);
 
   return (
-    <aside
-      className={clsx(
-        "flex shrink-0 flex-col",
-        isUpdate
-          ? "themed-surface m-4 mr-0 h-[calc(100%-2rem)] w-72 rounded-2xl border shadow-[0_10px_40px_-22px_rgba(15,23,42,0.35)] backdrop-blur-xl"
-          : isZero
-            ? "h-full w-64 border-r border-border-muted bg-bg font-mono"
-            : "h-full w-72 border-r border-border-muted bg-surface-1",
+    <>
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm md:hidden"
+          onClick={onMobileClose}
+        />
       )}
-    >
+      <aside
+        className={clsx(
+          "flex shrink-0 flex-col transition-transform duration-200 ease-out",
+          "fixed inset-y-0 left-0 z-50 md:relative md:z-auto md:translate-x-0",
+          mobileOpen ? "translate-x-0" : "-translate-x-full",
+          isUpdate
+            ? "themed-surface md:m-4 md:mr-0 md:h-[calc(100%-2rem)] w-72 md:rounded-2xl border shadow-[0_10px_40px_-22px_rgba(15,23,42,0.35)] backdrop-blur-xl h-full bg-[var(--bg)] md:bg-transparent"
+            : isZero
+              ? "h-full w-64 border-r border-border-muted bg-bg font-mono"
+              : "h-full w-72 border-r border-border-muted bg-surface-1",
+        )}
+      >
       <div
         className={clsx(
           "border-b border-border-muted",
           isUpdate ? "p-4" : isZero ? "p-2" : "p-3",
         )}
       >
-        <button
-          type="button"
-          onClick={onNew}
-          className={clsx(
-            "inline-flex w-full items-center justify-center gap-2 font-medium transition-colors duration-150",
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onMobileClose}
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-muted hover:bg-surface-3 hover:text-text transition-colors md:hidden"
+            aria-label="Закрыть меню"
+          >
+            <X className="h-5 w-5" />
+          </button>
+          <button
+            type="button"
+            onClick={onNew}
+            className={clsx(
+              "inline-flex w-full items-center justify-center gap-2 font-medium transition-colors duration-150",
             isUpdate
               ? "themed-accent-bg rounded-xl px-4 py-2.5 text-sm text-white shadow-[0_8px_24px_-14px_rgba(79,70,229,0.55)] transition-[filter] hover:brightness-110"
               : isZero
@@ -60,9 +82,10 @@ export function Sidebar({
                 : "rounded-md bg-accent px-3 py-2 text-sm text-white shadow-raised hover:bg-accent-hover",
           )}
         >
-          <MessageSquarePlus className="w-4 h-4" />
-          Новый чат
-        </button>
+            <MessageSquarePlus className="w-4 h-4" />
+            Новый чат
+          </button>
+        </div>
       </div>
 
       <nav className={clsx("flex-1 overflow-y-auto", isUpdate ? "px-3 py-3" : "px-2 py-2")}>
@@ -153,5 +176,6 @@ export function Sidebar({
         {isZero ? "FW/AI :: ONLINE" : "Powered by Fireworks AI"}
       </div>
     </aside>
+    </>
   );
 }
