@@ -451,12 +451,12 @@ export default function App() {
               <div className="hidden sm:contents">
               <DesignPicker value={selectedDesign} onChange={setSelectedDesign} />
               {isUpdate && <ThemePicker value={theme} onChange={onThemeChange} />}
-              </div>
               <ResponseModePicker
                 value={selectedMode}
                 onChange={onModeChange}
                 compact={isUpdate || isZero}
               />
+              </div>
             </div>
           </header>
 

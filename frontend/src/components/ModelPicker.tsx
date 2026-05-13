@@ -44,8 +44,8 @@ export function ModelPicker({ models, value, onChange }: ModelPickerProps) {
         )}
       >
         <ModelAvatar modelId={selected.id} size="sm" />
-        <span className="text-text-subtle">Модель</span>
-        <span className="font-medium">{selected.label}</span>
+        <span className="hidden sm:inline text-text-subtle">Модель</span>
+        <span className="font-medium truncate max-w-[120px] sm:max-w-none">{selected.label}</span>
         <ChevronDown
           className={clsx("h-3.5 w-3.5 transition-transform", open && "rotate-180")}
         />
